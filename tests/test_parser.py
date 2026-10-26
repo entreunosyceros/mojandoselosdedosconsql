@@ -177,6 +177,51 @@ def test_alias_de_subconsulta_en_from():
     assert where.subconsultas[0].alias is None
 
 
+def test_union_expone_order_by_y_limite_en_el_bloque():
+    nivel = bloque(_nodo("SELECT id FROM t UNION SELECT id FROM u ORDER BY id LIMIT 5"))
+    assert [clausula.nombre for clausula in nivel.clausulas] == ["ORDER BY", "LIMIT"]
+    assert all(bloque(rama).clausulas == () for rama in nivel.ramas)
+    fetch = bloque(
+        _nodo(
+            "SELECT id FROM t UNION SELECT id FROM u "
+            "ORDER BY id OFFSET 2 FETCH FIRST 1 ROW ONLY"
+        )
+    )
+    assert [clausula.nombre for clausula in fetch.clausulas] == ["ORDER BY", "OFFSET", "FETCH"]
+    assert all(bloque(rama).clausulas == () for rama in fetch.ramas)
+
+
+def test_envoltorio_conserva_order_by_y_limite():
+    orden = bloque(_nodo("SELECT * FROM ((SELECT id FROM t) ORDER BY id) AS s"))
+    assert "ORDER BY" in normalizar(orden.subconsultas[0].nodo, "postgresql")
+    limitado = bloque(_nodo("SELECT * FROM ((SELECT id FROM t) ORDER BY id LIMIT 1) s"))
+    texto = normalizar(limitado.subconsultas[0].nodo, "postgresql")
+    assert "ORDER BY" in texto
+    assert "LIMIT" in texto
+    assert limitado.subconsultas[0].alias == "s"
+    interno = bloque(_nodo("SELECT * FROM (SELECT id FROM t ORDER BY id) AS s"))
+    assert "ORDER BY" in normalizar(interno.subconsultas[0].nodo, "postgresql")
+
+
+def test_all_y_some_dejan_la_subconsulta():
+    mayor = bloque(_nodo("SELECT * FROM t WHERE id > ALL (SELECT id FROM u)"))
+    assert len(mayor.subconsultas) == 1
+    assert mayor.subconsultas[0].alias is None
+    assert [tabla.nombre for tabla in bloque(mayor.subconsultas[0].nodo).tablas] == ["u"]
+    alguno = bloque(_nodo("SELECT * FROM t WHERE id = SOME (SELECT id FROM u)"))
+    assert len(alguno.subconsultas) == 1
+    assert alguno.subconsultas[0].alias is None
+    conjunto = bloque(
+        _nodo("SELECT * FROM t WHERE id > ALL (SELECT id FROM u UNION SELECT id FROM v)")
+    )
+    assert len(conjunto.subconsultas) == 1
+    assert conjunto.subconsultas[0].alias is None
+    assert bloque(conjunto.subconsultas[0].nodo).ramas is not None
+    lista = bloque(_nodo("SELECT id > ALL (SELECT id FROM u) FROM t"))
+    assert len(lista.subconsultas) == 1
+    assert lista.subconsultas[0].alias is None
+
+
 def test_subconsulta_de_union_no_tiene_envoltorio():
     sql = "SELECT * FROM (SELECT id FROM t UNION ALL SELECT id FROM u) AS s"
     nivel = bloque(_nodo(sql))

@@ -125,9 +125,10 @@ def normalizar(nodo: Nodo, dialecto: str) -> str:
 
 
 def bloque(nodo: Nodo) -> Bloque:
-    arbol = _consulta(nodo._expression)
+    arbol, heredadas = _entrada(nodo._expression)
+    clausulas = heredadas + _clausulas(arbol)
     if isinstance(arbol, exp.SetOperation):
-        # SQLGlot guarda UNION ALL con distinct=False.
+        # SQLGlot guarda UNION ALL con distinct=False. Ese booleano no es una cláusula DISTINCT.
         return Bloque(
             type(arbol).__name__,
             _ctes(arbol),
@@ -136,7 +137,7 @@ def bloque(nodo: Nodo) -> Bloque:
             (),
             (),
             (),
-            (),
+            clausulas,
             (),
         )
 
@@ -176,7 +177,7 @@ def bloque(nodo: Nodo) -> Bloque:
         tuple(subconsultas),
         tuple(tablas),
         tuple(relaciones),
-        _clausulas(arbol),
+        clausulas,
         tuple(proyecciones),
     )
 
@@ -185,12 +186,15 @@ def expresion(nodo: Nodo) -> Expresion:
     return _clasificar(nodo._expression)
 
 
-def _consulta(arbol: object) -> exp.Expression:
-    while isinstance(arbol, (exp.Subquery, exp.Lateral)) and isinstance(arbol.this, exp.Expression):
-        arbol = arbol.this
+def _entrada(arbol: object) -> tuple[exp.Expression, tuple[ClausulaSintactica, ...]]:
     if not isinstance(arbol, exp.Expression):
         raise TypeError("El nodo no contiene una expresión SQL.")
-    return arbol
+    heredadas: list[ClausulaSintactica] = []
+    while isinstance(arbol, (exp.Subquery, exp.Lateral)) and isinstance(arbol.this, exp.Expression):
+        if _tiene_modificadores(arbol):
+            heredadas.extend(_clausulas(arbol))
+        arbol = arbol.this
+    return arbol, tuple(heredadas)
 
 
 def _ctes(arbol: exp.Expression) -> tuple[Cte, ...]:
@@ -276,9 +280,19 @@ def _subconsulta_de_origen(fuente: exp.Expression) -> Subconsulta | None:
 
 
 def _cuerpo(arbol: exp.Expression) -> exp.Expression:
+    # ORDER BY, LIMIT u OFFSET pueden vivir en el Subquery, no en el Select interior.
     while isinstance(arbol, (exp.Subquery, exp.Lateral)) and isinstance(arbol.this, exp.Expression):
+        if _tiene_modificadores(arbol):
+            return arbol
         arbol = arbol.this
     return arbol
+
+
+def _tiene_modificadores(arbol: exp.Expression) -> bool:
+    for clave in ("order", "offset", "limit"):
+        if arbol.args.get(clave) not in (None, [], False, ""):
+            return True
+    return False
 
 
 def _subconsultas_directas(arbol: exp.Expression) -> list[Subconsulta]:
@@ -295,7 +309,8 @@ def _subconsultas_directas(arbol: exp.Expression) -> list[Subconsulta]:
     if isinstance(arbol, exp.Exists) and isinstance(arbol.this, exp.Expression):
         return [Subconsulta(Nodo(_cuerpo(arbol.this)), None)]
     if isinstance(arbol, (exp.Select, exp.SetOperation)):
-        return []
+        # ALL y SOME dejan el Select o la unión al descubierto, sin Subquery.
+        return [Subconsulta(Nodo(arbol), None)]
     encontradas: list[Subconsulta] = []
     for parte in _partes(arbol):
         encontradas.extend(_subconsultas_directas(parte))
