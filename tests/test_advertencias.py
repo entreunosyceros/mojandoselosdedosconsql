@@ -211,3 +211,27 @@ def test_columna_exterior_en_subconsulta_avisa():
 def test_columna_de_la_subconsulta_no_avisa():
     sql = "SELECT (SELECT id FROM otros) FROM empleados GROUP BY departamento"
     assert "select_fuera_de_group_by" not in codigos(sql)
+
+
+def test_la_coma_no_entra_en_el_right_join():
+    base = "SELECT * FROM a, b RIGHT JOIN c ON b.id = c.id "
+    assert "outer_join_filtrado" not in codigos(base + "WHERE a.x = 1")
+    assert "outer_join_filtrado" in codigos(base + "WHERE b.x = 1")
+    assert "outer_join_filtrado" not in codigos(base + "WHERE c.x = 1")
+
+
+def test_cross_join_si_entra_en_el_right_join():
+    sql = "SELECT * FROM a CROSS JOIN b RIGHT JOIN c ON b.id = c.id WHERE a.x = 1"
+    assert "outer_join_filtrado" in codigos(sql)
+
+
+def test_filtro_de_agregado_fuera_del_grupo():
+    sql = "SELECT SUM(salario) FILTER (WHERE departamento = 1) FROM empleados GROUP BY id"
+    assert "select_fuera_de_group_by" in codigos(sql)
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
+
+
+def test_order_by_de_agregado_fuera_del_grupo():
+    sql = "SELECT array_agg(id ORDER BY salario) FROM empleados GROUP BY id"
+    assert "select_fuera_de_group_by" in codigos(sql)
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")

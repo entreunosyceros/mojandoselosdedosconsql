@@ -47,12 +47,16 @@ def _del_componente(componente: Componente, dialecto: str) -> list[Advertencia]:
 def _outer_join(componente, clausulas, relaciones, dialecto) -> list[Advertencia]:
     predicados = [_predicado(nodo) for nombre, nodo in clausulas if nombre in {"WHERE", "HAVING"}]
     avisos: list[Advertencia] = []
-    # La izquierda de un RIGHT o FULL posterior es toda la entrada ya vista, no solo la fuente anterior.
-    acumulado: list[str] = []
+    # JOIN encadena la entrada. Una coma abre otro grupo y no mete lo anterior en el RIGHT o FULL.
+    grupo: list[str] = []
+    escritos = _joins_escritos(componente._nodo)
     for indice, (relacion, _) in enumerate(relaciones):
-        if not acumulado:
-            acumulado.append(relacion.izquierda)
-        izquierda = tuple(acumulado)
+        if indice < len(escritos) and _es_coma(escritos[indice]):
+            grupo = [relacion.derecha]
+            continue
+        if not grupo:
+            grupo.append(relacion.izquierda)
+        izquierda = tuple(grupo)
         derecha = (relacion.derecha,)
         forma = _OUTER.get(relacion.tipo)
         if forma is not None:
@@ -67,8 +71,8 @@ def _outer_join(componente, clausulas, relaciones, dialecto) -> list[Advertencia
                 grupos = (izquierda,)
             else:
                 grupos = (izquierda, derecha)
-            for grupo in grupos:
-                anulables = _calificadores_de(grupo, componente.tablas)
+            for lado in grupos:
+                anulables = _calificadores_de(lado, componente.tablas)
                 if not anulables:
                     continue
                 for predicado in predicados + posteriores:
@@ -91,8 +95,30 @@ def _outer_join(componente, clausulas, relaciones, dialecto) -> list[Advertencia
                             fragmento,
                         )
                     )
-        acumulado.append(relacion.derecha)
+        grupo.append(relacion.derecha)
     return avisos
+
+
+def _joins_escritos(nodo: Nodo) -> list:
+    args = getattr(nodo._expression, "args", None)
+    if not isinstance(args, dict):
+        return []
+    encontrados = []
+    for join in args.get("joins") or []:
+        if type(join).__name__ != "Join" or not isinstance(getattr(join, "args", None), dict):
+            continue
+        if _es_expr(join.args.get("this")):
+            encontrados.append(join)
+    return encontrados
+
+
+def _es_coma(join) -> bool:
+    args = join.args
+    if str(args.get("kind") or "").strip() or str(args.get("side") or "").strip():
+        return False
+    if args.get("on") is not None or args.get("using") or args.get("method"):
+        return False
+    return True
 
 
 def _calificadores_de(lados: tuple[str, ...], tablas: tuple[Tabla, ...]) -> set[str]:
@@ -266,6 +292,8 @@ def _referencias_nodo(expr, internas: frozenset[str] = frozenset()):
         return
     forma = expresion(Nodo(expr))
     if forma.forma == "agregacion":
+        # FILTER y ORDER BY no son argumentos: esas columnas sí se comprueban.
+        yield from _extras_de_agregado(expr, internas)
         return
     if forma.forma == "columna":
         if _es_columna_interna(forma, internas):
@@ -276,6 +304,22 @@ def _referencias_nodo(expr, internas: frozenset[str] = frozenset()):
         return
     for hijo in _subexpresiones(expr):
         yield from _referencias_nodo(hijo, internas)
+
+
+def _extras_de_agregado(expr, internas: frozenset[str]):
+    if type(expr).__name__ == "Filter":
+        interno = expr.args.get("this")
+        if _es_expr(interno):
+            yield from _extras_de_agregado(interno, internas)
+        predicado = expr.args.get("expression")
+        if _es_expr(predicado):
+            yield from _referencias_nodo(predicado, internas)
+        return
+    this = expr.args.get("this") if isinstance(getattr(expr, "args", None), dict) else None
+    if _es_expr(this) and type(this).__name__ == "Order":
+        for clave in this.args.get("expressions") or []:
+            if _es_expr(clave):
+                yield from _referencias_nodo(clave, internas)
 
 
 def _es_columna_interna(forma: Expresion, internas: frozenset[str]) -> bool:
