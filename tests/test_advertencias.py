@@ -184,3 +184,30 @@ def test_el_with_de_union_no_repite_el_aviso():
         "SELECT id FROM activos UNION ALL SELECT id FROM antiguos WHERE id = NULL"
     )
     assert codigos(sql).count("comparacion_con_null") == 2
+
+
+def test_right_join_posterior_incluye_la_entrada_izquierda():
+    sql = (
+        "SELECT * FROM a JOIN b ON a.id = b.id "
+        "RIGHT JOIN c ON b.id = c.id WHERE a.x = 1"
+    )
+    assert "outer_join_filtrado" in codigos(sql)
+
+
+def test_full_join_posterior_incluye_la_entrada_izquierda():
+    sql = (
+        "SELECT * FROM a JOIN b ON a.id = b.id "
+        "FULL JOIN c ON b.id = c.id WHERE a.x = 1"
+    )
+    assert "outer_join_filtrado" in codigos(sql)
+
+
+def test_columna_exterior_en_subconsulta_avisa():
+    sql = "SELECT (SELECT e.id) FROM empleados AS e GROUP BY e.departamento"
+    assert "select_fuera_de_group_by" in codigos(sql)
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
+
+
+def test_columna_de_la_subconsulta_no_avisa():
+    sql = "SELECT (SELECT id FROM otros) FROM empleados GROUP BY departamento"
+    assert "select_fuera_de_group_by" not in codigos(sql)

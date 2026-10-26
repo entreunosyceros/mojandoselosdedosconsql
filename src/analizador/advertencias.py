@@ -47,50 +47,59 @@ def _del_componente(componente: Componente, dialecto: str) -> list[Advertencia]:
 def _outer_join(componente, clausulas, relaciones, dialecto) -> list[Advertencia]:
     predicados = [_predicado(nodo) for nombre, nodo in clausulas if nombre in {"WHERE", "HAVING"}]
     avisos: list[Advertencia] = []
-    for indice, (relacion, sintactica) in enumerate(relaciones):
+    # La izquierda de un RIGHT o FULL posterior es toda la entrada ya vista, no solo la fuente anterior.
+    acumulado: list[str] = []
+    for indice, (relacion, _) in enumerate(relaciones):
+        if not acumulado:
+            acumulado.append(relacion.izquierda)
+        izquierda = tuple(acumulado)
+        derecha = (relacion.derecha,)
         forma = _OUTER.get(relacion.tipo)
-        if forma is None:
-            continue
-        posteriores = [
-            posterior.condicion
-            for siguiente, (_, posterior) in enumerate(relaciones)
-            if siguiente > indice and posterior.tipo == "inner" and posterior.condicion is not None
-        ]
-        for lado in _lados(relacion):
-            anulables = _calificadores(lado, componente.tablas)
-            if not anulables:
-                continue
-            for predicado in predicados + posteriores:
-                tabla = _mencion(predicado._expression, anulables)
-                if tabla is None:
+        if forma is not None:
+            posteriores = [
+                posterior.condicion
+                for siguiente, (_, posterior) in enumerate(relaciones)
+                if siguiente > indice and posterior.tipo == "inner" and posterior.condicion is not None
+            ]
+            if relacion.tipo == "left":
+                grupos = (derecha,)
+            elif relacion.tipo == "right":
+                grupos = (izquierda,)
+            else:
+                grupos = (izquierda, derecha)
+            for grupo in grupos:
+                anulables = _calificadores_de(grupo, componente.tablas)
+                if not anulables:
                     continue
-                resultado = _resultado(predicado._expression, anulables)
-                if resultado not in {"FALSE", "UNKNOWN"}:
-                    continue
-                fragmento = normalizar(predicado, dialecto)
-                avisos.append(
-                    _aviso(
-                        componente,
-                        "outer_join_filtrado",
-                        (
-                            f"El {forma} con {tabla} deja sus columnas a NULL cuando no hay "
-                            f"coincidencia. El filtro posterior `{fragmento}` descarta esos NULL, "
-                            "así que las filas sin coincidencia pueden desaparecer."
-                        ),
-                        fragmento,
+                for predicado in predicados + posteriores:
+                    tabla = _mencion(predicado._expression, anulables)
+                    if tabla is None:
+                        continue
+                    resultado = _resultado(predicado._expression, anulables)
+                    if resultado not in {"FALSE", "UNKNOWN"}:
+                        continue
+                    fragmento = normalizar(predicado, dialecto)
+                    avisos.append(
+                        _aviso(
+                            componente,
+                            "outer_join_filtrado",
+                            (
+                                f"El {forma} con {tabla} deja sus columnas a NULL cuando no hay "
+                                f"coincidencia. El filtro posterior `{fragmento}` descarta esos "
+                                "NULL, así que las filas sin coincidencia pueden desaparecer."
+                            ),
+                            fragmento,
+                        )
                     )
-                )
+        acumulado.append(relacion.derecha)
     return avisos
 
 
-def _lados(relacion) -> tuple[str, ...]:
-    if relacion.tipo == "left":
-        return (relacion.derecha,)
-    if relacion.tipo == "right":
-        return (relacion.izquierda,)
-    if relacion.tipo == "full":
-        return (relacion.izquierda, relacion.derecha)
-    return ()
+def _calificadores_de(lados: tuple[str, ...], tablas: tuple[Tabla, ...]) -> set[str]:
+    nombres: set[str] = set()
+    for lado in lados:
+        nombres.update(_calificadores(lado, tablas))
+    return nombres
 
 
 def _calificadores(lado: str, tablas: tuple[Tabla, ...]) -> set[str]:
@@ -211,7 +220,9 @@ def _agrupacion(componente, clausulas, columnas, dialecto) -> list[Advertencia]:
             continue
         if _alias_impide_aviso(forma, alias, claves):
             continue
-        referencias = [_referencia(ref, componente.tablas) for ref in _referencias(forma)]
+        referencias = [
+            _referencia(ref, componente.tablas) for ref in _referencias_nodo(proyeccion._expression)
+        ]
         if not any(_descubierta(ref, claves) for ref in referencias):
             continue
         fragmento = normalizar(proyeccion, dialecto)
@@ -241,14 +252,51 @@ def _misma_expresion(proyeccion: Nodo, elementos: list[Nodo], dialecto: str) -> 
     return any(_canon(normalizar(_nucleo(elemento), dialecto)) == izquierda for elemento in elementos)
 
 
-def _referencias(forma: Expresion):
+def _referencias_nodo(expr, internas: frozenset[str] = frozenset()):
+    if not _es_expr(expr):
+        return
+    nombre = type(expr).__name__
+    if nombre in {"Paren", "Alias"} and _es_expr(getattr(expr, "this", None)):
+        yield from _referencias_nodo(expr.this, internas)
+        return
+    if nombre in _CONSULTA:
+        propias = _nombres_propios(expr)
+        for hijo in _subexpresiones(expr):
+            yield from _referencias_nodo(hijo, internas | propias)
+        return
+    forma = expresion(Nodo(expr))
     if forma.forma == "agregacion":
         return
     if forma.forma == "columna":
+        if _es_columna_interna(forma, internas):
+            return
         yield forma
         return
-    for hijo in forma.hijos:
-        yield from _referencias(hijo)
+    if forma.forma == "asterisco":
+        return
+    for hijo in _subexpresiones(expr):
+        yield from _referencias_nodo(hijo, internas)
+
+
+def _es_columna_interna(forma: Expresion, internas: frozenset[str]) -> bool:
+    if not internas:
+        return False
+    if forma.calificador is None:
+        return True
+    return forma.calificador in internas
+
+
+def _nombres_propios(expr) -> frozenset[str]:
+    info = bloque(Nodo(expr))
+    nombres: set[str] = set()
+    for tabla in info.tablas:
+        nombres.add(tabla.nombre)
+        if tabla.alias:
+            nombres.add(tabla.alias)
+    for subconsulta in info.subconsultas:
+        if subconsulta.alias:
+            nombres.add(subconsulta.alias)
+    return frozenset(nombres)
 
 
 def _columna_simple(forma: Expresion) -> Expresion | None:
