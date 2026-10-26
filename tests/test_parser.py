@@ -168,11 +168,20 @@ def test_union_distinto_no_marca_union_all():
     assert bloque(_nodo("SELECT 1")).ramas is None
 
 
+def test_alias_de_subconsulta_en_from():
+    nivel = bloque(_nodo("SELECT * FROM (SELECT id FROM t UNION ALL SELECT id FROM u) AS s"))
+    assert nivel.tablas == ()
+    assert nivel.subconsultas[0].alias == "s"
+    assert bloque(nivel.subconsultas[0].nodo).ramas is not None
+    where = bloque(_nodo("SELECT id FROM t WHERE id IN (SELECT id FROM u)"))
+    assert where.subconsultas[0].alias is None
+
+
 def test_subconsulta_de_union_no_tiene_envoltorio():
     sql = "SELECT * FROM (SELECT id FROM t UNION ALL SELECT id FROM u) AS s"
     nivel = bloque(_nodo(sql))
     assert len(nivel.subconsultas) == 1
-    interno = bloque(nivel.subconsultas[0])
+    interno = bloque(nivel.subconsultas[0].nodo)
     assert interno.union_all is True
     assert [tabla.nombre for tabla in bloque(interno.ramas[0]).tablas] == ["t"]
     assert [tabla.nombre for tabla in bloque(interno.ramas[1]).tablas] == ["u"]
@@ -215,21 +224,21 @@ def test_subconsulta_de_where_no_sube_su_tabla():
     nivel = bloque(_nodo(sql))
     assert [tabla.nombre for tabla in nivel.tablas] == ["t"]
     assert len(nivel.subconsultas) == 1
-    interna = bloque(nivel.subconsultas[0])
+    interna = bloque(nivel.subconsultas[0].nodo)
     assert [tabla.nombre for tabla in interna.tablas] == ["u"]
-    assert [tabla.nombre for tabla in bloque(interna.subconsultas[0]).tablas] == ["v"]
+    assert [tabla.nombre for tabla in bloque(interna.subconsultas[0].nodo).tablas] == ["v"]
 
 
 def test_insert_separa_destino_y_origen():
     nivel = bloque(_nodo("INSERT INTO dest SELECT id FROM src"))
     assert [tabla.nombre for tabla in nivel.tablas] == ["dest"]
-    assert [tabla.nombre for tabla in bloque(nivel.subconsultas[0]).tablas] == ["src"]
+    assert [tabla.nombre for tabla in bloque(nivel.subconsultas[0].nodo).tablas] == ["src"]
 
 
 def test_delete_no_sube_la_tabla_de_la_subconsulta():
     nivel = bloque(_nodo("DELETE FROM t WHERE id IN (SELECT id FROM u)"))
     assert [tabla.nombre for tabla in nivel.tablas] == ["t"]
-    assert [tabla.nombre for tabla in bloque(nivel.subconsultas[0]).tablas] == ["u"]
+    assert [tabla.nombre for tabla in bloque(nivel.subconsultas[0].nodo).tablas] == ["u"]
 
 
 def test_create_expone_la_tabla_y_sus_columnas():

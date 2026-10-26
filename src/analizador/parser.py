@@ -46,6 +46,12 @@ class Cte:
 
 
 @dataclass(frozen=True)
+class Subconsulta:
+    nodo: Nodo
+    alias: str | None
+
+
+@dataclass(frozen=True)
 class TablaSintactica:
     nombre: str
     alias: str | None
@@ -71,7 +77,7 @@ class Bloque:
     ctes: tuple[Cte, ...]
     ramas: tuple[Nodo, Nodo] | None
     union_all: bool | None
-    subconsultas: tuple[Nodo, ...]
+    subconsultas: tuple[Subconsulta, ...]
     tablas: tuple[TablaSintactica, ...]
     relaciones: tuple[RelacionSintactica, ...]
     clausulas: tuple[ClausulaSintactica, ...]
@@ -136,23 +142,23 @@ def bloque(nodo: Nodo) -> Bloque:
 
     tablas: list[TablaSintactica] = []
     relaciones: list[RelacionSintactica] = []
-    subconsultas: list[Nodo] = []
+    subconsultas: list[Subconsulta] = []
     proyecciones: list[Nodo] = []
     if isinstance(arbol, exp.Select):
         tablas, relaciones, de_origen = _origenes(arbol)
         subconsultas.extend(de_origen)
         for proyeccion in arbol.expressions:
             proyecciones.append(Nodo(proyeccion))
-            subconsultas.extend(Nodo(cuerpo) for cuerpo in _subconsultas_directas(proyeccion))
+            subconsultas.extend(_subconsultas_directas(proyeccion))
     elif isinstance(arbol, exp.Insert):
         tabla = _tabla_de(arbol.this)
         if tabla is not None:
             tablas.append(tabla)
         origen = arbol.args.get("expression")
         if isinstance(origen, exp.Expression):
-            cuerpo = _cuerpo_de_origen(origen)
-            if cuerpo is not None:
-                subconsultas.append(Nodo(cuerpo))
+            origen_consulta = _subconsulta_de_origen(origen)
+            if origen_consulta is not None:
+                subconsultas.append(origen_consulta)
     else:
         tablas.extend(_tablas_de_objeto(arbol))
         if isinstance(arbol, exp.Create):
@@ -160,7 +166,7 @@ def bloque(nodo: Nodo) -> Bloque:
 
     where = arbol.args.get("where")
     if isinstance(where, exp.Where) and isinstance(where.this, exp.Expression):
-        subconsultas.extend(Nodo(cuerpo) for cuerpo in _subconsultas_directas(where.this))
+        subconsultas.extend(_subconsultas_directas(where.this))
 
     return Bloque(
         type(arbol).__name__,
@@ -199,10 +205,10 @@ def _ctes(arbol: exp.Expression) -> tuple[Cte, ...]:
 
 def _origenes(
     select: exp.Select,
-) -> tuple[list[TablaSintactica], list[RelacionSintactica], list[Nodo]]:
+) -> tuple[list[TablaSintactica], list[RelacionSintactica], list[Subconsulta]]:
     tablas: list[TablaSintactica] = []
     relaciones: list[RelacionSintactica] = []
-    subconsultas: list[Nodo] = []
+    subconsultas: list[Subconsulta] = []
     from_ = select.args.get("from_")
     joins = [join for join in (select.args.get("joins") or []) if isinstance(join, exp.Join)]
     fuentes: list[exp.Expression] = []
@@ -215,9 +221,9 @@ def _origenes(
             if tabla is not None:
                 tablas.append(tabla)
             continue
-        cuerpo = _cuerpo_de_origen(fuente)
-        if cuerpo is not None:
-            subconsultas.append(Nodo(cuerpo))
+        consulta = _subconsulta_de_origen(fuente)
+        if consulta is not None:
+            subconsultas.append(consulta)
 
     if isinstance(from_, exp.From) and isinstance(from_.this, exp.Expression):
         # FROM a, b llega como JOIN sin tipo ni ON: un producto cruzado, en el orden escrito.
@@ -259,11 +265,13 @@ def _tipo_join(join: exp.Join) -> str:
     return "otro"
 
 
-def _cuerpo_de_origen(fuente: exp.Expression) -> exp.Expression | None:
+def _subconsulta_de_origen(fuente: exp.Expression) -> Subconsulta | None:
     if isinstance(fuente, exp.Table):
         return None
-    if isinstance(fuente, (exp.Subquery, exp.Lateral, exp.Select, exp.SetOperation)):
-        return _cuerpo(fuente)
+    if isinstance(fuente, (exp.Subquery, exp.Lateral)):
+        return Subconsulta(Nodo(_cuerpo(fuente)), _texto_alias(fuente))
+    if isinstance(fuente, (exp.Select, exp.SetOperation)):
+        return Subconsulta(Nodo(fuente), None)
     return None
 
 
@@ -273,14 +281,22 @@ def _cuerpo(arbol: exp.Expression) -> exp.Expression:
     return arbol
 
 
-def _subconsultas_directas(arbol: exp.Expression) -> list[exp.Expression]:
-    if isinstance(arbol, exp.Subquery):
-        return [_cuerpo(arbol)]
+def _subconsultas_directas(arbol: exp.Expression) -> list[Subconsulta]:
+    if isinstance(arbol, exp.Alias) and isinstance(arbol.this, exp.Expression):
+        if isinstance(arbol.this, (exp.Subquery, exp.Lateral, exp.Select, exp.SetOperation)):
+            hecha = _subconsulta_de_origen(arbol.this)
+            if hecha is None:
+                return []
+            return [Subconsulta(hecha.nodo, hecha.alias or _texto_alias(arbol))]
+        return _subconsultas_directas(arbol.this)
+    if isinstance(arbol, (exp.Subquery, exp.Lateral)):
+        hecha = _subconsulta_de_origen(arbol)
+        return [hecha] if hecha is not None else []
     if isinstance(arbol, exp.Exists) and isinstance(arbol.this, exp.Expression):
-        return [_cuerpo(arbol.this)]
+        return [Subconsulta(Nodo(_cuerpo(arbol.this)), None)]
     if isinstance(arbol, (exp.Select, exp.SetOperation)):
         return []
-    encontradas: list[exp.Expression] = []
+    encontradas: list[Subconsulta] = []
     for parte in _partes(arbol):
         encontradas.extend(_subconsultas_directas(parte))
     return encontradas
