@@ -39,3 +39,32 @@ def test_solo_comentarios():
 def test_triple_punto_y_coma():
     resultado = parsear(";;;", "postgresql")
     assert resultado.errores[0].mensaje == "La consulta no contiene ninguna sentencia."
+
+
+def test_parentesis_se_detiene_en_la_posicion_del_error():
+    resultado = parsear("SELECT (1; SELECT (2", "postgresql")
+    assert "paréntesis abierto" in resultado.errores[0].mensaje
+    assert resultado.errores[0].linea == 1
+    assert resultado.errores[0].columna == 8
+
+
+def test_parentesis_posterior_no_cierra_el_anterior():
+    resultado = parsear("SELECT (1; SELECT 2)", "postgresql")
+    assert "paréntesis abierto" in resultado.errores[0].mensaje
+    assert resultado.errores[0].linea == 1
+    assert resultado.errores[0].columna == 8
+
+
+def test_cadena_e_sin_cerrar_es_comilla():
+    resultado = parsear("SELECT E'foo\\'", "postgresql")
+    assert resultado.sentencias == ()
+    assert "comilla abierta" in resultado.errores[0].mensaje
+    assert resultado.errores[0].linea == 1
+    assert resultado.errores[0].columna == 9
+
+
+def test_cadena_e_cerrada_no_oculta_la_comilla_siguiente():
+    resultado = parsear("SELECT E'it\\'s'; SELECT 'ab", "postgresql")
+    assert "comilla abierta" in resultado.errores[0].mensaje
+    assert resultado.errores[0].linea == 1
+    assert resultado.errores[0].columna == 25

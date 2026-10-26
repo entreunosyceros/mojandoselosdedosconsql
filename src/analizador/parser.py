@@ -77,7 +77,9 @@ def _traducir_parseo(detalle: dict[str, object], sql: str, interno: str) -> Erro
         return _error(_mensaje_generico(linea, columna, descripcion), linea, columna)
 
     esperado, encontrado = partes
-    parentesis = _parentesis_abierto(sql, interno) if esperado == ")" else None
+    parentesis = (
+        _parentesis_abierto(sql, interno, linea, columna) if esperado == ")" else None
+    )
     if parentesis is not None:
         linea_parentesis, columna_parentesis = parentesis
         return _error(
@@ -204,9 +206,13 @@ def _solo_comentarios_o_espacios(sql: str, interno: str) -> bool:
     return bool(sql) and not sql.strip()
 
 
-def _parentesis_abierto(sql: str, interno: str) -> tuple[int, int] | None:
+def _parentesis_abierto(
+    sql: str, interno: str, linea: int | None, columna: int | None
+) -> tuple[int, int] | None:
     pila: list[tuple[int, int]] = []
     for token in sqlglot.tokenize(sql, read=interno):
+        if linea is not None and columna is not None and (token.line, token.col) > (linea, columna):
+            break
         if token.token_type == TokenType.L_PAREN:
             pila.append((token.line, token.col))
         elif token.token_type == TokenType.R_PAREN and pila:
@@ -221,6 +227,7 @@ def _delimitador_abierto(sql: str, interno: str) -> tuple[str, int, int, str] | 
     identificadores = sorted(clase._IDENTIFIERS, key=len, reverse=True)
     comentarios = sorted(clase._COMMENTS, key=len, reverse=True)
     comillas = sorted(clase._QUOTES, key=len, reverse=True)
+    prefijos = _cadenas_con_prefijo(clase)
     indice = 0
     linea = 1
     columna = 1
@@ -258,6 +265,18 @@ def _delimitador_abierto(sql: str, interno: str) -> tuple[str, int, int, str] | 
                 return ("comentario", apertura[0], apertura[1], comentario)
             continue
 
+        prefijo = _prefijo_en(sql, indice, prefijos) if _puede_abrir_prefijo(sql, indice) else None
+        if prefijo is not None:
+            inicio, cierre, escapes = prefijo
+            antes = len(inicio) - len(cierre)
+            indice, linea, columna = _avanzar(sql, indice, linea, columna, antes)
+            apertura = (linea, columna)
+            indice, linea, columna = _avanzar(sql, indice, linea, columna, len(cierre))
+            cerrado, indice, linea, columna = _consumir(sql, indice, linea, columna, cierre, escapes)
+            if not cerrado:
+                return ("comilla", apertura[0], apertura[1], cierre)
+            continue
+
         comilla = _coincide(sql, indice, comillas)
         if comilla is not None:
             apertura = (linea, columna)
@@ -279,6 +298,41 @@ def _delimitador_abierto(sql: str, interno: str) -> tuple[str, int, int, str] | 
 
         indice, linea, columna = _avanzar(sql, indice, linea, columna, 1)
 
+    return None
+
+
+def _cadenas_con_prefijo(clase: type) -> list[tuple[str, str, set[str]]]:
+    cadenas: list[tuple[str, str, set[str]]] = []
+    for inicio, (cierre, tipo) in clase._FORMAT_STRINGS.items():
+        if not cierre or tipo == TokenType.HEREDOC_STRING:
+            continue
+        if tipo == TokenType.BYTE_STRING:
+            escapes = set(clase._BYTE_STRING_ESCAPES)
+        elif (
+            tipo in (TokenType.RAW_STRING, TokenType.NATIONAL_RAW_STRING)
+            and not clase.STRING_ESCAPES_ALLOWED_IN_RAW_STRINGS
+        ):
+            escapes = set()
+        else:
+            escapes = set(clase._STRING_ESCAPES)
+        cadenas.append((inicio, cierre, escapes))
+    cadenas.sort(key=lambda cadena: len(cadena[0]), reverse=True)
+    return cadenas
+
+
+def _puede_abrir_prefijo(sql: str, indice: int) -> bool:
+    if indice == 0:
+        return True
+    anterior = sql[indice - 1]
+    return not (anterior.isalnum() or anterior == "_")
+
+
+def _prefijo_en(
+    sql: str, indice: int, prefijos: list[tuple[str, str, set[str]]]
+) -> tuple[str, str, set[str]] | None:
+    for inicio, cierre, escapes in prefijos:
+        if sql.startswith(inicio, indice):
+            return inicio, cierre, escapes
     return None
 
 
