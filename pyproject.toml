@@ -1,0 +1,20 @@
+[project]
+name = "mojandose-los-dedos-con-sql"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "sqlglot==30.25.0",
+  "fastapi",
+  "uvicorn",
+  "jinja2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+testpaths = ["tests"]
