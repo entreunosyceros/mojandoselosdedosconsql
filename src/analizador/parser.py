@@ -16,6 +16,8 @@ _ESPERADO = re.compile(
 )
 _TEXTO_TOKEN = re.compile(r"text:\s*(.*?),\s*line:")
 _POSICION_EN_CAUSA = re.compile(r" from \d+:\d+$")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_LINEA_EN_TEXTO = re.compile(r"Line\s+(\d+),\s*Col:\s*(\d+)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,27 @@ def parsear(sql: str, dialecto: str) -> ResultadoParseo:
 
 
 def _errores_de_parseo(error: ParseError, sql: str, interno: str) -> list[Error]:
+    if not error.errors:
+        return [_error_de_parseo_sin_detalle(error)]
     return [_traducir_parseo(detalle, sql, interno) for detalle in error.errors]
+
+
+def _error_de_parseo_sin_detalle(error: ParseError) -> Error:
+    texto = str(error)
+    if _ANSI.search(texto):
+        texto = _ANSI.sub("", texto)
+    linea, columna, descripcion = _posicion_en_texto(texto)
+    return _error(_mensaje_generico(linea, columna, descripcion), linea, columna)
+
+
+def _posicion_en_texto(texto: str) -> tuple[int | None, int | None, str]:
+    coincidencia = _LINEA_EN_TEXTO.search(texto)
+    if coincidencia is None:
+        return None, None, texto.strip()
+    descripcion = texto[: coincidencia.start()].strip()
+    if descripcion.endswith("."):
+        descripcion = descripcion[:-1].rstrip()
+    return int(coincidencia.group(1)), int(coincidencia.group(2)), descripcion
 
 
 def _traducir_parseo(detalle: dict[str, object], sql: str, interno: str) -> Error:

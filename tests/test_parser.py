@@ -75,3 +75,11 @@ def test_comilla_mysql_no_trata_la_otra_comilla_como_escape():
     assert "comilla abierta" in resultado.errores[0].mensaje
     assert resultado.errores[0].linea == 1
     assert resultado.errores[0].columna == 34
+
+
+def test_date_add_sin_intervalo_es_error_de_sintaxis():
+    resultado = parsear("SELECT DATE_ADD('2020-01-01', 1)", "mysql")
+    assert resultado.sentencias == ()
+    assert len(resultado.errores) == 1
+    assert resultado.errores[0].mensaje
+    assert "INTERVAL expression expected but got '1'" in resultado.errores[0].mensaje
