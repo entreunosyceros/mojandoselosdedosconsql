@@ -83,3 +83,9 @@ def test_date_add_sin_intervalo_es_error_de_sintaxis():
     assert len(resultado.errores) == 1
     assert resultado.errores[0].mensaje
     assert "INTERVAL expression expected but got '1'" in resultado.errores[0].mensaje
+
+
+def test_comentario_anidado_cerrado_no_oculta_la_comilla():
+    resultado = parsear("/*/*/ SELECT 'ab", "postgresql")
+    assert "comilla abierta" in resultado.errores[0].mensaje
+    assert "comentario abierto" not in resultado.errores[0].mensaje

@@ -422,18 +422,19 @@ def _saltar_comentario_de_bloque(
     cierre: str,
     anidados: bool,
 ) -> tuple[bool, int, int, int]:
+    # SQLGlot mira primero `*/` y solo busca un `/*` anidado después de consumir un carácter.
     profundidad = 1
     while indice < len(sql) and profundidad:
-        if anidados and sql.startswith(apertura, indice):
-            profundidad += 1
-            indice, linea, columna = _avanzar(sql, indice, linea, columna, len(apertura))
-            continue
         if sql.startswith(cierre, indice):
             profundidad -= 1
-            indice, linea, columna = _avanzar(sql, indice, linea, columna, len(cierre))
-            continue
+            if profundidad == 0:
+                indice, linea, columna = _avanzar(sql, indice, linea, columna, len(cierre))
+                return True, indice, linea, columna
         indice, linea, columna = _avanzar(sql, indice, linea, columna, 1)
-    return profundidad == 0, indice, linea, columna
+        if anidados and indice < len(sql) and sql.startswith(apertura, indice):
+            profundidad += 1
+            indice, linea, columna = _avanzar(sql, indice, linea, columna, len(apertura))
+    return False, indice, linea, columna
 
 
 def _saltar_heredoc(
