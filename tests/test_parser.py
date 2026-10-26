@@ -68,3 +68,10 @@ def test_cadena_e_cerrada_no_oculta_la_comilla_siguiente():
     assert "comilla abierta" in resultado.errores[0].mensaje
     assert resultado.errores[0].linea == 1
     assert resultado.errores[0].columna == 25
+
+
+def test_comilla_mysql_no_trata_la_otra_comilla_como_escape():
+    resultado = parsear("""SELECT 'He said "hello"'; SELECT 'ab""", "mysql")
+    assert "comilla abierta" in resultado.errores[0].mensaje
+    assert resultado.errores[0].linea == 1
+    assert resultado.errores[0].columna == 34

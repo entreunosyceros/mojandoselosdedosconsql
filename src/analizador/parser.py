@@ -361,12 +361,11 @@ def _consumir(
 ) -> tuple[bool, int, int, int]:
     tamano = len(cierre)
     while indice < len(sql):
-        caracter = sql[indice]
-        if caracter in escapes and caracter != cierre and indice + 1 < len(sql):
-            siguiente = sql[indice + 1]
-            if siguiente in escapes or sql.startswith(cierre, indice + 1):
-                indice, linea, columna = _avanzar(sql, indice, linea, columna, 2)
-                continue
+        # Una comilla solo escapa cuando es el cierre y está duplicada.
+        # La barra invertida, si el dialecto la usa, consume el carácter siguiente.
+        if "\\" in escapes and sql[indice] == "\\" and indice + 1 < len(sql):
+            indice, linea, columna = _avanzar(sql, indice, linea, columna, 2)
+            continue
         if sql.startswith(cierre, indice):
             if cierre in escapes and sql.startswith(cierre + cierre, indice):
                 indice, linea, columna = _avanzar(sql, indice, linea, columna, tamano * 2)
