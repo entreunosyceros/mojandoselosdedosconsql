@@ -133,9 +133,8 @@ def _calificadores(lado: str, tablas: tuple[Tabla, ...]) -> set[str]:
     for tabla in tablas:
         if not _lado_contiene(lado, tabla):
             continue
-        nombres.add(tabla.nombre)
-        if tabla.alias:
-            nombres.add(tabla.alias)
+        # Con alias, el origen solo se nombra por el alias. El nombre base no es otro calificador.
+        nombres.add(tabla.alias or tabla.nombre)
     return nombres
 
 
@@ -334,9 +333,7 @@ def _nombres_propios(expr) -> frozenset[str]:
     info = bloque(Nodo(expr))
     nombres: set[str] = set()
     for tabla in info.tablas:
-        nombres.add(tabla.nombre)
-        if tabla.alias:
-            nombres.add(tabla.alias)
+        nombres.add(tabla.alias or tabla.nombre)
     for subconsulta in info.subconsultas:
         if subconsulta.alias:
             nombres.add(subconsulta.alias)
@@ -388,14 +385,21 @@ def _referencia(forma: Expresion, tablas: tuple[Tabla, ...]) -> _Ref:
 def _resolver(calificador: str | None, tablas: tuple[Tabla, ...]) -> tuple[str, str | None]:
     if not calificador:
         return "sin_calificar", None
-    coincidencias = [
-        tabla.nombre for tabla in tablas if calificador == tabla.nombre or calificador == tabla.alias
-    ]
-    if len(coincidencias) == 1:
-        return "resuelta", coincidencias[0]
-    if not coincidencias:
-        return "no_resuelta", None
-    return "ambigua", None
+    por_alias = [tabla for tabla in tablas if tabla.alias == calificador]
+    por_nombre = [tabla for tabla in tablas if not tabla.alias and tabla.nombre == calificador]
+    if len(por_alias) + len(por_nombre) > 1:
+        return "ambigua", None
+    if len(por_alias) == 1:
+        return "resuelta", por_alias[0].alias or por_alias[0].nombre
+    if len(por_nombre) == 1:
+        return "resuelta", por_nombre[0].nombre
+    # empleados.id y e.id son el mismo origen si empleados AS e aparece una sola vez.
+    por_base = [tabla for tabla in tablas if tabla.nombre == calificador]
+    if len(por_base) == 1:
+        return "resuelta", por_base[0].alias or por_base[0].nombre
+    if len(por_base) > 1:
+        return "ambigua", None
+    return "no_resuelta", None
 
 
 def _resultado(expr: object, anulables: set[str]) -> str:

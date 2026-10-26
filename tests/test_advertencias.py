@@ -235,3 +235,31 @@ def test_order_by_de_agregado_fuera_del_grupo():
     sql = "SELECT array_agg(id ORDER BY salario) FROM empleados GROUP BY id"
     assert "select_fuera_de_group_by" in codigos(sql)
     assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
+
+
+def test_el_nombre_base_aliasado_no_es_el_lado_anulable():
+    base = "SELECT * FROM a LEFT JOIN a AS a2 ON a.id = a2.id "
+    assert "outer_join_filtrado" not in codigos(base + "WHERE a.x = 1")
+    assert "outer_join_filtrado" in codigos(base + "WHERE a2.x = 1")
+    pedidos = "SELECT * FROM pedidos AS p LEFT JOIN clientes AS c ON p.id = c.id "
+    assert "outer_join_filtrado" not in codigos(pedidos + "WHERE clientes.estado = 'A'")
+    assert "outer_join_filtrado" in codigos(pedidos + "WHERE c.estado = 'A'")
+
+
+def test_dos_alias_de_la_misma_relacion_no_son_el_mismo_origen():
+    sql = "SELECT a2.id FROM a AS a1 JOIN a AS a2 ON a1.id = a2.id GROUP BY a1.id"
+    assert "select_fuera_de_group_by" in codigos(sql)
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
+
+
+def test_el_nombre_base_y_el_alias_unico_son_el_mismo_origen():
+    sql = "SELECT e.id FROM empleados AS e GROUP BY empleados.id"
+    assert "select_fuera_de_group_by" not in codigos(sql)
+
+
+def test_la_correlacion_no_se_esconde_tras_el_nombre_base_interno():
+    sql = "SELECT (SELECT a.id FROM a AS a1) FROM a GROUP BY a.x"
+    assert "select_fuera_de_group_by" in codigos(sql)
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
+    propio = "SELECT (SELECT a1.id FROM a AS a1) FROM a GROUP BY a.x"
+    assert "select_fuera_de_group_by" not in codigos(propio)
