@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analizador SQL</title>
+  <link rel="stylesheet" href="/estaticos/estilo.css">
+</head>
+<body data-orden-logico="{{ orden_logico }}">
+  <form id="formulario">
+    <label for="dialecto">Dialecto</label>
+    <select id="dialecto" name="dialecto">
+      <option value="postgresql">PostgreSQL</option>
+      <option value="mysql">MySQL</option>
+      <option value="sqlite">SQLite</option>
+      <option value="sqlserver">SQL Server</option>
+    </select>
+    <label for="sql">Consulta</label>
+    <textarea id="sql" name="sql" rows="14" spellcheck="false"></textarea>
+    <button type="submit">Analizar</button>
+  </form>
+  <p id="vacio">Elige un dialecto y pega la sentencia.</p>
+  <div id="errores"></div>
+  <div id="resultado"></div>
+  <script src="/estaticos/app.js"></script>
+</body>
+</html>

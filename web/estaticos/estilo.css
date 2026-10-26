@@ -1,0 +1,148 @@
+:root {
+  color-scheme: light dark;
+  --fondo: #f4f1ea;
+  --texto: #1d1a16;
+  --linea: #d8d1c4;
+  --panel: #fffdf8;
+  --acento: #1f4d3a;
+  --acento-texto: #f7fff9;
+  --error: #8d2e2e;
+  --aviso: #8a5a12;
+  --suave: #5e584e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fondo: #161513;
+    --texto: #f3efe6;
+    --linea: #3c362e;
+    --panel: #221f1b;
+    --error: #f0b0a8;
+    --aviso: #e4c48a;
+    --suave: #c4bbaa;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 52rem;
+  padding: 1.5rem 1.25rem 3rem;
+  background: var(--fondo);
+  color: var(--texto);
+  font: 1rem/1.5 "Segoe UI", "Liberation Sans", sans-serif;
+}
+
+form {
+  display: grid;
+  gap: 0.45rem;
+}
+
+label {
+  font-weight: 650;
+}
+
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+select,
+textarea {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--linea);
+  border-radius: 0.45rem;
+  background: var(--panel);
+  color: inherit;
+}
+
+textarea {
+  min-height: 14rem;
+  resize: vertical;
+}
+
+button {
+  justify-self: start;
+  margin-top: 0.35rem;
+  padding: 0.45rem 0.95rem;
+  border: 0;
+  border-radius: 0.45rem;
+  background: var(--acento);
+  color: var(--acento-texto);
+  cursor: pointer;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
+#vacio {
+  color: var(--suave);
+}
+
+.error {
+  margin: 0.8rem 0 0;
+  color: var(--error);
+}
+
+.advertencia {
+  margin: 0.35rem 0;
+  color: var(--aviso);
+}
+
+.advertencia code,
+pre {
+  display: block;
+  margin: 0.35rem 0 0;
+  padding: 0.75rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--linea);
+  border-radius: 0.45rem;
+  background: var(--panel);
+  color: inherit;
+}
+
+.sentencia {
+  margin-top: 1.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--linea);
+}
+
+.sentencia h2,
+.componente h3 {
+  margin: 0.6rem 0 0.3rem;
+  font-size: 1.05rem;
+}
+
+.resumen,
+.orden-logico,
+.explicacion {
+  margin: 0.3rem 0 0.6rem;
+}
+
+.orden-logico,
+.explicacion {
+  color: var(--suave);
+}
+
+details.componente {
+  margin: 0.35rem 0 0.35rem 0.6rem;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.sql button {
+  margin-top: 0.5rem;
+}
