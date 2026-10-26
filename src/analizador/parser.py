@@ -297,11 +297,7 @@ def _tiene_modificadores(arbol: exp.Expression) -> bool:
 
 def _subconsultas_directas(arbol: exp.Expression) -> list[Subconsulta]:
     if isinstance(arbol, exp.Alias) and isinstance(arbol.this, exp.Expression):
-        if isinstance(arbol.this, (exp.Subquery, exp.Lateral, exp.Select, exp.SetOperation)):
-            hecha = _subconsulta_de_origen(arbol.this)
-            if hecha is None:
-                return []
-            return [Subconsulta(hecha.nodo, hecha.alias or _texto_alias(arbol))]
+        # El alias de la expresión es de la columna, no un origen de lectura.
         return _subconsultas_directas(arbol.this)
     if isinstance(arbol, (exp.Subquery, exp.Lateral)):
         hecha = _subconsulta_de_origen(arbol)
@@ -389,11 +385,11 @@ _COMPARACION = (
 _IGNORAR = (exp.Identifier, exp.DataType, exp.TableAlias)
 
 
-def _clasificar(arbol: object, *, en_ventana: bool = False) -> Expresion:
+def _clasificar(arbol: object) -> Expresion:
     if isinstance(arbol, exp.Paren) and isinstance(arbol.this, exp.Expression):
-        return _clasificar(arbol.this, en_ventana=en_ventana)
+        return _clasificar(arbol.this)
     if isinstance(arbol, (exp.Where, exp.Having)) and isinstance(arbol.this, exp.Expression):
-        return _clasificar(arbol.this, en_ventana=en_ventana)
+        return _clasificar(arbol.this)
     if isinstance(arbol, exp.Group):
         return Expresion("otra", None, None, tuple(_clasificar(hijo) for hijo in arbol.expressions))
     if isinstance(arbol, exp.Order):
@@ -407,7 +403,7 @@ def _clasificar(arbol: object, *, en_ventana: bool = False) -> Expresion:
     if isinstance(arbol, exp.Alias):
         return Expresion("alias", _texto_alias(arbol), None, (_clasificar(arbol.this),))
     if isinstance(arbol, exp.Window):
-        # La ventana no cuenta como agregación: la función interna no tapa a sus columnas.
+        # La ventana no es una agregación. El agregado interior sí lo es; PARTITION BY y ORDER BY quedan fuera.
         return Expresion("ventana", None, None, tuple(_hijos_ventana(arbol)))
     if isinstance(arbol, exp.Column):
         if isinstance(arbol.this, exp.Star):
@@ -431,9 +427,9 @@ def _clasificar(arbol: object, *, en_ventana: bool = False) -> Expresion:
     if isinstance(arbol, _COMPARACION):
         return Expresion("comparacion", None, None, _binarios(arbol))
     if isinstance(arbol, exp.Filter) and isinstance(arbol.this, exp.AggFunc):
-        return _agregado(arbol.this, arbol.args.get("expression"), en_ventana=en_ventana)
+        return _agregado(arbol.this, arbol.args.get("expression"))
     if isinstance(arbol, exp.AggFunc):
-        return _agregado(arbol, None, en_ventana=en_ventana)
+        return _agregado(arbol, None)
     if isinstance(arbol, exp.ColumnDef):
         return Expresion("otra", arbol.name or None, None, ())
     if isinstance(arbol, (exp.Select, exp.SetOperation, exp.Subquery)):
@@ -449,20 +445,17 @@ def _clasificar(arbol: object, *, en_ventana: bool = False) -> Expresion:
     )
 
 
-def _agregado(
-    funcion: exp.AggFunc, predicado: object, *, en_ventana: bool
-) -> Expresion:
+def _agregado(funcion: exp.AggFunc, predicado: object) -> Expresion:
     hijos = [_clasificar(argumento) for argumento in _argumentos(funcion)]
     if isinstance(predicado, exp.Expression):
         hijos.append(_clasificar(predicado))
-    forma = "otra" if en_ventana else "agregacion"
-    return Expresion(forma, funcion.sql_name(), None, tuple(hijos))
+    return Expresion("agregacion", funcion.sql_name(), None, tuple(hijos))
 
 
 def _hijos_ventana(arbol: exp.Window) -> list[Expresion]:
     hijos: list[Expresion] = []
     if isinstance(arbol.this, exp.Expression):
-        hijos.append(_clasificar(arbol.this, en_ventana=True))
+        hijos.append(_clasificar(arbol.this))
     for parte in arbol.args.get("partition_by") or []:
         if isinstance(parte, exp.Expression):
             hijos.append(_clasificar(parte))

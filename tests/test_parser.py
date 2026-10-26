@@ -5,13 +5,6 @@ def _nodo(sql, dialecto="postgresql"):
     return parsear(sql, dialecto).sentencias[0].nodo
 
 
-def _formas(arbol):
-    encontradas = [arbol.forma]
-    for hijo in arbol.hijos:
-        encontradas.extend(_formas(hijo))
-    return encontradas
-
-
 def test_dos_sentencias():
     resultado = parsear("SELECT 1; SELECT 2", "postgresql")
     assert [s.tipo for s in resultado.sentencias] == ["Select", "Select"]
@@ -175,6 +168,15 @@ def test_alias_de_subconsulta_en_from():
     assert bloque(nivel.subconsultas[0].nodo).ramas is not None
     where = bloque(_nodo("SELECT id FROM t WHERE id IN (SELECT id FROM u)"))
     assert where.subconsultas[0].alias is None
+
+
+def test_alias_de_la_proyeccion_no_es_origen():
+    nivel = bloque(_nodo("SELECT (SELECT id FROM t) AS s FROM u"))
+    assert nivel.subconsultas[0].alias is None
+    proyeccion = expresion(nivel.proyecciones[0])
+    assert proyeccion.forma == "alias"
+    assert proyeccion.nombre == "s"
+    assert [tabla.nombre for tabla in nivel.tablas] == ["u"]
 
 
 def test_union_expone_order_by_y_limite_en_el_bloque():
@@ -350,8 +352,13 @@ def test_ventana_no_es_agregacion():
     sql = "SELECT SUM(salario) OVER (PARTITION BY departamento ORDER BY id) FROM empleados"
     forma = expresion(bloque(_nodo(sql)).proyecciones[0])
     assert forma.forma == "ventana"
-    assert "agregacion" not in _formas(forma)
-    assert "columna" in _formas(forma)
+    agregados = [hijo for hijo in forma.hijos if hijo.forma == "agregacion"]
+    assert len(agregados) == 1
+    assert [(hijo.forma, hijo.nombre) for hijo in agregados[0].hijos] == [("columna", "salario")]
+    fuera = [hijo.nombre for hijo in forma.hijos if hijo.forma == "columna"]
+    assert "departamento" in fuera
+    assert "id" in fuera
+    assert "salario" not in fuera
 
 
 def test_alias_envuelve_la_expresion():
