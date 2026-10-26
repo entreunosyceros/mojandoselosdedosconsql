@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 import sqlglot
+from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 from sqlglot.tokens import TokenType
 
@@ -38,6 +39,53 @@ class ResultadoParseo:
     errores: tuple[Error, ...]
 
 
+@dataclass(frozen=True)
+class Cte:
+    alias: str
+    nodo: Nodo
+
+
+@dataclass(frozen=True)
+class TablaSintactica:
+    nombre: str
+    alias: str | None
+
+
+@dataclass(frozen=True)
+class RelacionSintactica:
+    tipo: str
+    izquierda: Nodo
+    derecha: Nodo
+    condicion: Nodo | None
+
+
+@dataclass(frozen=True)
+class ClausulaSintactica:
+    nombre: str
+    nodo: Nodo
+
+
+@dataclass(frozen=True)
+class Bloque:
+    tipo: str
+    ctes: tuple[Cte, ...]
+    ramas: tuple[Nodo, Nodo] | None
+    union_all: bool | None
+    subconsultas: tuple[Nodo, ...]
+    tablas: tuple[TablaSintactica, ...]
+    relaciones: tuple[RelacionSintactica, ...]
+    clausulas: tuple[ClausulaSintactica, ...]
+    proyecciones: tuple[Nodo, ...]
+
+
+@dataclass(frozen=True)
+class Expresion:
+    forma: str
+    nombre: str | None
+    calificador: str | None
+    hijos: tuple[Expresion, ...]
+
+
 def parsear(sql: str, dialecto: str) -> ResultadoParseo:
     interno = nombre_interno(dialecto)
     try:
@@ -64,6 +112,391 @@ def parsear(sql: str, dialecto: str) -> ResultadoParseo:
     if sql.strip():
         return ResultadoParseo((), (_error(SIN_SENTENCIA),))
     return ResultadoParseo((), ())
+
+
+def normalizar(nodo: Nodo, dialecto: str) -> str:
+    return nodo._expression.sql(dialect=nombre_interno(dialecto))
+
+
+def bloque(nodo: Nodo) -> Bloque:
+    arbol = _consulta(nodo._expression)
+    if isinstance(arbol, exp.SetOperation):
+        # SQLGlot guarda UNION ALL con distinct=False.
+        return Bloque(
+            type(arbol).__name__,
+            _ctes(arbol),
+            (Nodo(arbol.this), Nodo(arbol.expression)),
+            arbol.args.get("distinct") is False,
+            (),
+            (),
+            (),
+            (),
+            (),
+        )
+
+    tablas: list[TablaSintactica] = []
+    relaciones: list[RelacionSintactica] = []
+    subconsultas: list[Nodo] = []
+    proyecciones: list[Nodo] = []
+    if isinstance(arbol, exp.Select):
+        tablas, relaciones, de_origen = _origenes(arbol)
+        subconsultas.extend(de_origen)
+        for proyeccion in arbol.expressions:
+            proyecciones.append(Nodo(proyeccion))
+            subconsultas.extend(Nodo(cuerpo) for cuerpo in _subconsultas_directas(proyeccion))
+    elif isinstance(arbol, exp.Insert):
+        tabla = _tabla_de(arbol.this)
+        if tabla is not None:
+            tablas.append(tabla)
+        origen = arbol.args.get("expression")
+        if isinstance(origen, exp.Expression):
+            cuerpo = _cuerpo_de_origen(origen)
+            if cuerpo is not None:
+                subconsultas.append(Nodo(cuerpo))
+    else:
+        tablas.extend(_tablas_de_objeto(arbol))
+        if isinstance(arbol, exp.Create):
+            proyecciones.extend(Nodo(columna) for columna in _columnas_definidas(arbol))
+
+    where = arbol.args.get("where")
+    if isinstance(where, exp.Where) and isinstance(where.this, exp.Expression):
+        subconsultas.extend(Nodo(cuerpo) for cuerpo in _subconsultas_directas(where.this))
+
+    return Bloque(
+        type(arbol).__name__,
+        _ctes(arbol),
+        None,
+        None,
+        tuple(subconsultas),
+        tuple(tablas),
+        tuple(relaciones),
+        _clausulas(arbol),
+        tuple(proyecciones),
+    )
+
+
+def expresion(nodo: Nodo) -> Expresion:
+    return _clasificar(nodo._expression)
+
+
+def _consulta(arbol: object) -> exp.Expression:
+    while isinstance(arbol, (exp.Subquery, exp.Lateral)) and isinstance(arbol.this, exp.Expression):
+        arbol = arbol.this
+    if not isinstance(arbol, exp.Expression):
+        raise TypeError("El nodo no contiene una expresión SQL.")
+    return arbol
+
+
+def _ctes(arbol: exp.Expression) -> tuple[Cte, ...]:
+    clausula = arbol.args.get("with_")
+    if not isinstance(clausula, exp.With):
+        return ()
+    return tuple(
+        Cte(cte.alias if isinstance(cte.alias, str) else "", Nodo(cte.this))
+        for cte in clausula.expressions
+    )
+
+
+def _origenes(
+    select: exp.Select,
+) -> tuple[list[TablaSintactica], list[RelacionSintactica], list[Nodo]]:
+    tablas: list[TablaSintactica] = []
+    relaciones: list[RelacionSintactica] = []
+    subconsultas: list[Nodo] = []
+    from_ = select.args.get("from_")
+    joins = [join for join in (select.args.get("joins") or []) if isinstance(join, exp.Join)]
+    fuentes: list[exp.Expression] = []
+    if isinstance(from_, exp.From) and isinstance(from_.this, exp.Expression):
+        fuentes.append(from_.this)
+    fuentes.extend(join.this for join in joins if isinstance(join.this, exp.Expression))
+    for fuente in fuentes:
+        if isinstance(fuente, exp.Table):
+            tabla = _tabla_de(fuente)
+            if tabla is not None:
+                tablas.append(tabla)
+            continue
+        cuerpo = _cuerpo_de_origen(fuente)
+        if cuerpo is not None:
+            subconsultas.append(Nodo(cuerpo))
+
+    if isinstance(from_, exp.From) and isinstance(from_.this, exp.Expression):
+        # FROM a, b llega como JOIN sin tipo ni ON: un producto cruzado, en el orden escrito.
+        anterior = from_.this
+        for join in joins:
+            if not isinstance(join.this, exp.Expression):
+                continue
+            condicion = join.args.get("on")
+            relaciones.append(
+                RelacionSintactica(
+                    _tipo_join(join),
+                    Nodo(anterior),
+                    Nodo(join.this),
+                    Nodo(condicion) if isinstance(condicion, exp.Expression) else None,
+                )
+            )
+            anterior = join.this
+    return tablas, relaciones, subconsultas
+
+
+def _tipo_join(join: exp.Join) -> str:
+    kind = str(join.args.get("kind") or "").upper()
+    side = str(join.args.get("side") or "").upper()
+    method = str(join.args.get("method") or "").upper()
+    if kind in {"SEMI", "ANTI"} or method:
+        return "otro"
+    if side == "LEFT":
+        return "left"
+    if side == "RIGHT":
+        return "right"
+    if side == "FULL":
+        return "full"
+    if kind == "CROSS":
+        return "cross"
+    if join.args.get("on") is None and not join.args.get("using") and not side and not kind:
+        return "cross"
+    if kind in {"", "INNER"}:
+        return "inner"
+    return "otro"
+
+
+def _cuerpo_de_origen(fuente: exp.Expression) -> exp.Expression | None:
+    if isinstance(fuente, exp.Table):
+        return None
+    if isinstance(fuente, (exp.Subquery, exp.Lateral, exp.Select, exp.SetOperation)):
+        return _cuerpo(fuente)
+    return None
+
+
+def _cuerpo(arbol: exp.Expression) -> exp.Expression:
+    while isinstance(arbol, (exp.Subquery, exp.Lateral)) and isinstance(arbol.this, exp.Expression):
+        arbol = arbol.this
+    return arbol
+
+
+def _subconsultas_directas(arbol: exp.Expression) -> list[exp.Expression]:
+    if isinstance(arbol, exp.Subquery):
+        return [_cuerpo(arbol)]
+    if isinstance(arbol, exp.Exists) and isinstance(arbol.this, exp.Expression):
+        return [_cuerpo(arbol.this)]
+    if isinstance(arbol, (exp.Select, exp.SetOperation)):
+        return []
+    encontradas: list[exp.Expression] = []
+    for parte in _partes(arbol):
+        encontradas.extend(_subconsultas_directas(parte))
+    return encontradas
+
+
+def _tabla_de(arbol: exp.Expression) -> TablaSintactica | None:
+    tabla = arbol.this if isinstance(arbol, exp.Schema) else arbol
+    if not isinstance(tabla, exp.Table):
+        return None
+    alias = tabla.alias if isinstance(tabla.alias, str) and tabla.alias else None
+    return TablaSintactica(tabla.name, alias)
+
+
+def _tablas_de_objeto(arbol: exp.Expression) -> list[TablaSintactica]:
+    candidatos: list[exp.Expression] = []
+    if isinstance(arbol, exp.Drop):
+        candidatos.extend(
+            item for item in (arbol.args.get("tables") or []) if isinstance(item, exp.Expression)
+        )
+    elif isinstance(arbol, exp.Merge):
+        for clave in ("this", "using"):
+            valor = arbol.args.get(clave)
+            if isinstance(valor, exp.Expression):
+                candidatos.append(valor)
+    else:
+        this = arbol.args.get("this")
+        if isinstance(this, exp.Expression):
+            candidatos.append(this)
+    tablas: list[TablaSintactica] = []
+    for candidato in candidatos:
+        tabla = _tabla_de(candidato)
+        if tabla is not None:
+            tablas.append(tabla)
+    return tablas
+
+
+def _columnas_definidas(arbol: exp.Expression) -> list[exp.ColumnDef]:
+    esquema = arbol.args.get("this")
+    if not isinstance(esquema, exp.Schema):
+        return []
+    return [columna for columna in esquema.expressions if isinstance(columna, exp.ColumnDef)]
+
+
+def _clausulas(arbol: exp.Expression) -> tuple[ClausulaSintactica, ...]:
+    encontradas: list[ClausulaSintactica] = []
+    for clave, nombre in (
+        ("where", "WHERE"),
+        ("group", "GROUP BY"),
+        ("having", "HAVING"),
+        ("distinct", "DISTINCT"),
+        ("order", "ORDER BY"),
+        ("offset", "OFFSET"),
+    ):
+        valor = arbol.args.get(clave)
+        if isinstance(valor, exp.Expression):
+            encontradas.append(ClausulaSintactica(nombre, Nodo(valor)))
+    limite = arbol.args.get("limit")
+    if isinstance(limite, exp.Fetch):
+        encontradas.append(ClausulaSintactica("FETCH", Nodo(limite)))
+    elif isinstance(limite, exp.Expression):
+        encontradas.append(ClausulaSintactica("LIMIT", Nodo(limite)))
+    return tuple(encontradas)
+
+
+_COMPARACION = (
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.NullSafeEQ,
+    exp.NullSafeNEQ,
+)
+_IGNORAR = (exp.Identifier, exp.DataType, exp.TableAlias)
+
+
+def _clasificar(arbol: object, *, en_ventana: bool = False) -> Expresion:
+    if isinstance(arbol, exp.Paren) and isinstance(arbol.this, exp.Expression):
+        return _clasificar(arbol.this, en_ventana=en_ventana)
+    if isinstance(arbol, (exp.Where, exp.Having)) and isinstance(arbol.this, exp.Expression):
+        return _clasificar(arbol.this, en_ventana=en_ventana)
+    if isinstance(arbol, exp.Group):
+        return Expresion("otra", None, None, tuple(_clasificar(hijo) for hijo in arbol.expressions))
+    if isinstance(arbol, exp.Order):
+        claves = tuple(_clasificar(_clave_orden(hijo)) for hijo in arbol.expressions)
+        return Expresion("otra", None, None, claves)
+    if isinstance(arbol, (exp.Limit, exp.Fetch, exp.Offset)):
+        valor = arbol.args.get("expression") or arbol.args.get("count")
+        if isinstance(valor, exp.Expression):
+            return _clasificar(valor)
+        return Expresion("otra", None, None, ())
+    if isinstance(arbol, exp.Alias):
+        return Expresion("alias", _texto_alias(arbol), None, (_clasificar(arbol.this),))
+    if isinstance(arbol, exp.Window):
+        # La ventana no cuenta como agregación: la función interna no tapa a sus columnas.
+        return Expresion("ventana", None, None, tuple(_hijos_ventana(arbol)))
+    if isinstance(arbol, exp.Column):
+        if isinstance(arbol.this, exp.Star):
+            return Expresion("asterisco", None, _calificador(arbol), ())
+        return Expresion("columna", arbol.name, _calificador(arbol), ())
+    if isinstance(arbol, exp.Star):
+        return Expresion("asterisco", None, None, ())
+    if isinstance(arbol, exp.Null):
+        return Expresion("nulo", None, None, ())
+    if isinstance(arbol, (exp.Literal, exp.Boolean)):
+        return Expresion("literal", None, None, ())
+    if isinstance(arbol, exp.Is) and isinstance(arbol.args.get("expression"), exp.Null):
+        forma = "no_es_nulo" if arbol.args.get("negate") else "es_nulo"
+        return Expresion(forma, None, None, (_clasificar(arbol.this),))
+    if isinstance(arbol, exp.Not) and isinstance(arbol.this, exp.Expression):
+        return Expresion("no", None, None, (_clasificar(arbol.this),))
+    if isinstance(arbol, exp.And):
+        return Expresion("y", None, None, _binarios(arbol))
+    if isinstance(arbol, exp.Or):
+        return Expresion("o", None, None, _binarios(arbol))
+    if isinstance(arbol, _COMPARACION):
+        return Expresion("comparacion", None, None, _binarios(arbol))
+    if isinstance(arbol, exp.Filter) and isinstance(arbol.this, exp.AggFunc):
+        return _agregado(arbol.this, arbol.args.get("expression"), en_ventana=en_ventana)
+    if isinstance(arbol, exp.AggFunc):
+        return _agregado(arbol, None, en_ventana=en_ventana)
+    if isinstance(arbol, exp.ColumnDef):
+        return Expresion("otra", arbol.name or None, None, ())
+    if isinstance(arbol, (exp.Select, exp.SetOperation, exp.Subquery)):
+        return Expresion("otra", None, None, ())
+    if not isinstance(arbol, exp.Expression):
+        return Expresion("otra", None, None, ())
+    nombre = arbol.sql_name() if isinstance(arbol, exp.Func) else None
+    return Expresion(
+        "otra",
+        nombre,
+        None,
+        tuple(_clasificar(parte) for parte in _partes(arbol)),
+    )
+
+
+def _agregado(
+    funcion: exp.AggFunc, predicado: object, *, en_ventana: bool
+) -> Expresion:
+    hijos = [_clasificar(argumento) for argumento in _argumentos(funcion)]
+    if isinstance(predicado, exp.Expression):
+        hijos.append(_clasificar(predicado))
+    forma = "otra" if en_ventana else "agregacion"
+    return Expresion(forma, funcion.sql_name(), None, tuple(hijos))
+
+
+def _hijos_ventana(arbol: exp.Window) -> list[Expresion]:
+    hijos: list[Expresion] = []
+    if isinstance(arbol.this, exp.Expression):
+        hijos.append(_clasificar(arbol.this, en_ventana=True))
+    for parte in arbol.args.get("partition_by") or []:
+        if isinstance(parte, exp.Expression):
+            hijos.append(_clasificar(parte))
+    orden = arbol.args.get("order")
+    if isinstance(orden, exp.Order):
+        hijos.extend(_clasificar(_clave_orden(clave)) for clave in orden.expressions)
+    return hijos
+
+
+def _clave_orden(clave: exp.Expression) -> exp.Expression:
+    if isinstance(clave, exp.Ordered) and isinstance(clave.this, exp.Expression):
+        return clave.this
+    return clave
+
+
+def _argumentos(funcion: exp.Expression) -> list[exp.Expression]:
+    encontrados: list[exp.Expression] = []
+
+    def agregar(valor: object) -> None:
+        if isinstance(valor, exp.Distinct):
+            for expresion_interna in valor.expressions:
+                agregar(expresion_interna)
+            return
+        if isinstance(valor, exp.Expression) and not isinstance(valor, exp.Identifier):
+            encontrados.append(valor)
+
+    agregar(funcion.args.get("this"))
+    for extra in funcion.args.get("expressions") or []:
+        agregar(extra)
+    return encontrados
+
+
+def _binarios(arbol: exp.Expression) -> tuple[Expresion, ...]:
+    hijos: list[Expresion] = []
+    for clave in ("this", "expression"):
+        valor = arbol.args.get(clave)
+        if isinstance(valor, exp.Expression):
+            hijos.append(_clasificar(valor))
+    return tuple(hijos)
+
+
+def _partes(arbol: exp.Expression) -> list[exp.Expression]:
+    partes: list[exp.Expression] = []
+    for valor in arbol.args.values():
+        candidatos = valor if isinstance(valor, list) else (valor,)
+        for candidato in candidatos:
+            if isinstance(candidato, exp.Expression) and not isinstance(candidato, _IGNORAR):
+                partes.append(candidato)
+    return partes
+
+
+def _calificador(columna: exp.Column) -> str | None:
+    tabla = columna.args.get("table")
+    if isinstance(tabla, exp.Identifier) and tabla.name:
+        return tabla.name
+    if isinstance(tabla, str) and tabla:
+        return tabla
+    return None
+
+
+def _texto_alias(arbol: exp.Expression) -> str | None:
+    alias = arbol.alias
+    if isinstance(alias, str) and alias:
+        return alias
+    return None
 
 
 def _errores_de_parseo(error: ParseError, sql: str, interno: str) -> list[Error]:

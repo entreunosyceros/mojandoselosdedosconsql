@@ -1,4 +1,15 @@
-from analizador.parser import parsear
+from analizador.parser import bloque, expresion, normalizar, parsear
+
+
+def _nodo(sql, dialecto="postgresql"):
+    return parsear(sql, dialecto).sentencias[0].nodo
+
+
+def _formas(arbol):
+    encontradas = [arbol.forma]
+    for hijo in arbol.hijos:
+        encontradas.extend(_formas(hijo))
+    return encontradas
 
 
 def test_dos_sentencias():
@@ -89,3 +100,228 @@ def test_comentario_anidado_cerrado_no_oculta_la_comilla():
     resultado = parsear("/*/*/ SELECT 'ab", "postgresql")
     assert "comilla abierta" in resultado.errores[0].mensaje
     assert "comentario abierto" not in resultado.errores[0].mensaje
+
+
+def test_normalizar_no_es_el_texto_original():
+    nodo = parsear("select  1", "postgresql").sentencias[0].nodo
+    assert normalizar(nodo, "postgresql") == "SELECT 1"
+
+
+def test_bloque_de_select_no_despliega_la_subconsulta():
+    sql = "SELECT id FROM t WHERE id IN (SELECT id FROM u)"
+    nodo = parsear(sql, "postgresql").sentencias[0].nodo
+    nivel = bloque(nodo)
+    assert nivel.subconsultas
+    assert [tabla.nombre for tabla in nivel.tablas] == ["t"]
+
+
+def test_expresion_de_columna_no_inventa_tabla():
+    sql = "SELECT salario FROM empleados"
+    nodo = parsear(sql, "postgresql").sentencias[0].nodo
+    proyeccion = expresion(bloque(nodo).proyecciones[0])
+    assert proyeccion.forma == "columna"
+    assert proyeccion.nombre == "salario"
+    assert proyeccion.calificador is None
+
+
+def test_asterisco_dentro_de_count_no_es_proyeccion():
+    sql = "SELECT COUNT(e.*) FROM empleados AS e"
+    nodo = parsear(sql, "postgresql").sentencias[0].nodo
+    forma = expresion(bloque(nodo).proyecciones[0])
+    assert forma.forma == "agregacion"
+
+
+def test_normalizar_usa_el_dialecto():
+    nodo = _nodo("select top 1 [nombre] from [clientes]", "sqlserver")
+    assert "TOP" in normalizar(nodo, "sqlserver")
+
+
+def test_cte_no_copia_las_tablas_del_cuerpo():
+    sql = "WITH a AS (WITH b AS (SELECT 1 AS n) SELECT n FROM b) SELECT n FROM a"
+    nivel = bloque(_nodo(sql))
+    assert [cte.alias for cte in nivel.ctes] == ["a"]
+    assert [tabla.nombre for tabla in nivel.tablas] == ["a"]
+    cuerpo = bloque(nivel.ctes[0].nodo)
+    assert [cte.alias for cte in cuerpo.ctes] == ["b"]
+    assert [tabla.nombre for tabla in cuerpo.tablas] == ["b"]
+    assert bloque(cuerpo.ctes[0].nodo).tablas == ()
+
+
+def test_union_no_lista_las_tablas_de_las_ramas():
+    sql = (
+        "WITH activos AS (SELECT id FROM empleados) "
+        "SELECT id FROM activos UNION ALL SELECT id FROM antiguos"
+    )
+    nivel = bloque(_nodo(sql))
+    assert nivel.union_all is True
+    assert nivel.tablas == ()
+    assert [cte.alias for cte in nivel.ctes] == ["activos"]
+    assert [tabla.nombre for tabla in bloque(nivel.ctes[0].nodo).tablas] == ["empleados"]
+    assert [tabla.nombre for tabla in bloque(nivel.ramas[0]).tablas] == ["activos"]
+    assert [tabla.nombre for tabla in bloque(nivel.ramas[1]).tablas] == ["antiguos"]
+
+
+def test_union_distinto_no_marca_union_all():
+    nivel = bloque(_nodo("SELECT id FROM t UNION SELECT id FROM u"))
+    assert nivel.union_all is False
+    assert bloque(_nodo("SELECT 1")).union_all is None
+    assert bloque(_nodo("SELECT 1")).ramas is None
+
+
+def test_subconsulta_de_union_no_tiene_envoltorio():
+    sql = "SELECT * FROM (SELECT id FROM t UNION ALL SELECT id FROM u) AS s"
+    nivel = bloque(_nodo(sql))
+    assert len(nivel.subconsultas) == 1
+    interno = bloque(nivel.subconsultas[0])
+    assert interno.union_all is True
+    assert [tabla.nombre for tabla in bloque(interno.ramas[0]).tablas] == ["t"]
+    assert [tabla.nombre for tabla in bloque(interno.ramas[1]).tablas] == ["u"]
+    assert [tabla.nombre for tabla in nivel.tablas] == []
+
+
+def test_from_con_comas_relaciona_en_orden_de_escritura():
+    nivel = bloque(_nodo("SELECT a.id FROM a, b, c"))
+    assert [tabla.nombre for tabla in nivel.tablas] == ["a", "b", "c"]
+    assert [relacion.tipo for relacion in nivel.relaciones] == ["cross", "cross"]
+    assert [relacion.condicion for relacion in nivel.relaciones] == [None, None]
+    assert normalizar(nivel.relaciones[0].izquierda, "postgresql") == "a"
+    assert normalizar(nivel.relaciones[0].derecha, "postgresql") == "b"
+    assert normalizar(nivel.relaciones[1].izquierda, "postgresql") == "b"
+    assert normalizar(nivel.relaciones[1].derecha, "postgresql") == "c"
+
+
+def test_join_guarda_tipo_lados_y_on():
+    consultas = {
+        "SELECT * FROM a JOIN b ON a.id = b.id": "inner",
+        "SELECT * FROM a LEFT JOIN b ON a.id = b.id": "left",
+        "SELECT * FROM a RIGHT JOIN b ON a.id = b.id": "right",
+        "SELECT * FROM a FULL JOIN b ON a.id = b.id": "full",
+        "SELECT * FROM a CROSS JOIN b": "cross",
+        "SELECT * FROM a NATURAL JOIN b": "otro",
+    }
+    for sql, tipo in consultas.items():
+        relacion = bloque(_nodo(sql)).relaciones[0]
+        assert relacion.tipo == tipo
+        assert normalizar(relacion.izquierda, "postgresql") == "a"
+        assert normalizar(relacion.derecha, "postgresql") == "b"
+        if tipo == "cross" or tipo == "otro":
+            assert relacion.condicion is None
+        else:
+            assert normalizar(relacion.condicion, "postgresql") == "a.id = b.id"
+
+
+def test_subconsulta_de_where_no_sube_su_tabla():
+    sql = "SELECT id FROM t WHERE id IN (SELECT id FROM u WHERE id IN (SELECT id FROM v))"
+    nivel = bloque(_nodo(sql))
+    assert [tabla.nombre for tabla in nivel.tablas] == ["t"]
+    assert len(nivel.subconsultas) == 1
+    interna = bloque(nivel.subconsultas[0])
+    assert [tabla.nombre for tabla in interna.tablas] == ["u"]
+    assert [tabla.nombre for tabla in bloque(interna.subconsultas[0]).tablas] == ["v"]
+
+
+def test_insert_separa_destino_y_origen():
+    nivel = bloque(_nodo("INSERT INTO dest SELECT id FROM src"))
+    assert [tabla.nombre for tabla in nivel.tablas] == ["dest"]
+    assert [tabla.nombre for tabla in bloque(nivel.subconsultas[0]).tablas] == ["src"]
+
+
+def test_delete_no_sube_la_tabla_de_la_subconsulta():
+    nivel = bloque(_nodo("DELETE FROM t WHERE id IN (SELECT id FROM u)"))
+    assert [tabla.nombre for tabla in nivel.tablas] == ["t"]
+    assert [tabla.nombre for tabla in bloque(nivel.subconsultas[0]).tablas] == ["u"]
+
+
+def test_create_expone_la_tabla_y_sus_columnas():
+    nivel = bloque(_nodo("CREATE TABLE clientes (id INT, nombre TEXT)"))
+    assert nivel.tipo == "Create"
+    assert [(tabla.nombre, tabla.alias) for tabla in nivel.tablas] == [("clientes", None)]
+    assert [expresion(columna).nombre for columna in nivel.proyecciones] == ["id", "nombre"]
+
+
+def test_drop_y_alter_exponen_el_objeto():
+    assert [tabla.nombre for tabla in bloque(_nodo("DROP TABLE clientes")).tablas] == ["clientes"]
+    assert [tabla.nombre for tabla in bloque(_nodo("ALTER TABLE clientes ADD COLUMN edad INT")).tablas] == [
+        "clientes"
+    ]
+
+
+def test_clausulas_directas_no_incluyen_la_proyeccion():
+    sql = (
+        "SELECT DISTINCT d FROM e WHERE d > 1 GROUP BY d "
+        "HAVING d > 1 ORDER BY d LIMIT 10 OFFSET 2"
+    )
+    nivel = bloque(_nodo(sql))
+    assert [clausula.nombre for clausula in nivel.clausulas] == [
+        "WHERE",
+        "GROUP BY",
+        "HAVING",
+        "DISTINCT",
+        "ORDER BY",
+        "OFFSET",
+        "LIMIT",
+    ]
+    assert len(nivel.proyecciones) == 1
+    assert expresion(nivel.proyecciones[0]).forma == "columna"
+
+
+def test_calificador_escrito_no_es_la_tabla_del_from():
+    proyeccion = expresion(bloque(_nodo("SELECT e.salario FROM empleados AS e")).proyecciones[0])
+    assert proyeccion.forma == "columna"
+    assert proyeccion.nombre == "salario"
+    assert proyeccion.calificador == "e"
+    citada_nivel = bloque(_nodo('SELECT "E"."Salario" FROM "Empleados" AS "E"'))
+    citada = expresion(citada_nivel.proyecciones[0])
+    assert citada.nombre == "Salario"
+    assert citada.calificador == "E"
+    assert citada_nivel.tablas[0].nombre == "Empleados"
+    assert citada_nivel.tablas[0].alias == "E"
+
+
+def test_estrella_calificada_es_asterisco_y_dentro_de_count_es_hija():
+    estrella = expresion(bloque(_nodo("SELECT e.* FROM empleados AS e")).proyecciones[0])
+    assert estrella.forma == "asterisco"
+    assert estrella.calificador == "e"
+    cuenta = expresion(bloque(_nodo("SELECT COUNT(*) FROM empleados")).proyecciones[0])
+    assert cuenta.forma == "agregacion"
+    assert [hijo.forma for hijo in cuenta.hijos] == ["asterisco"]
+    calificada = expresion(
+        bloque(_nodo("SELECT COUNT(e.*) FROM empleados AS e")).proyecciones[0]
+    )
+    assert calificada.forma == "agregacion"
+    assert [(hijo.forma, hijo.calificador) for hijo in calificada.hijos] == [("asterisco", "e")]
+
+
+def test_ventana_no_es_agregacion():
+    sql = "SELECT SUM(salario) OVER (PARTITION BY departamento ORDER BY id) FROM empleados"
+    forma = expresion(bloque(_nodo(sql)).proyecciones[0])
+    assert forma.forma == "ventana"
+    assert "agregacion" not in _formas(forma)
+    assert "columna" in _formas(forma)
+
+
+def test_alias_envuelve_la_expresion():
+    forma = expresion(bloque(_nodo("SELECT salario + 100 AS total FROM empleados")).proyecciones[0])
+    assert forma.forma == "alias"
+    assert forma.nombre == "total"
+    assert [hijo.forma for hijo in forma.hijos[0].hijos] == ["columna", "literal"]
+
+
+def test_predicados_conservan_su_forma():
+    def predicado(sql):
+        where = next(clausula for clausula in bloque(_nodo(sql)).clausulas if clausula.nombre == "WHERE")
+        return expresion(where.nodo)
+
+    assert predicado("SELECT * FROM t WHERE a = NULL").forma == "comparacion"
+    assert [hijo.forma for hijo in predicado("SELECT * FROM t WHERE a = NULL").hijos] == [
+        "columna",
+        "nulo",
+    ]
+    assert predicado("SELECT * FROM t WHERE a IS NULL").forma == "es_nulo"
+    assert predicado("SELECT * FROM t WHERE a IS NOT NULL").forma == "no_es_nulo"
+    negado = predicado("SELECT * FROM t WHERE NOT (a = 1 AND b = 2 OR c = 3)")
+    assert negado.forma == "no"
+    assert negado.hijos[0].forma == "o"
+    assert negado.hijos[0].hijos[0].forma == "y"
+    assert expresion(bloque(_nodo("SELECT NULL")).proyecciones[0]).forma == "nulo"
+    assert expresion(bloque(_nodo("SELECT 1")).proyecciones[0]).forma == "literal"
