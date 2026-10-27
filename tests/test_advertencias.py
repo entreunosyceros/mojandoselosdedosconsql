@@ -311,6 +311,37 @@ def test_ordinal_dentro_de_rollup_cube_y_grouping_sets():
     assert "select_fuera_de_group_by" not in codigos(consultas[0], "sqlite")
 
 
+def test_grouping_sets_abre_la_tupla():
+    columnas = (
+        "SELECT departamento, salario FROM empleados "
+        "GROUP BY GROUPING SETS ((departamento, salario))"
+    )
+    assert "select_fuera_de_group_by" not in codigos(columnas)
+    ordinales = "SELECT departamento, salario FROM empleados GROUP BY GROUPING SETS ((1, 2))"
+    assert "select_fuera_de_group_by" not in codigos(ordinales)
+    assert _fragmentos(
+        "SELECT departamento, salario FROM empleados GROUP BY GROUPING SETS ((departamento))",
+        "select_fuera_de_group_by",
+    ) == ["salario"]
+
+
+def test_la_expresion_repetida_dentro_de_rollup_no_avisa():
+    consultas = (
+        "SELECT salario + 100 FROM empleados GROUP BY ROLLUP (salario + 100)",
+        "SELECT salario + 100 FROM empleados GROUP BY CUBE (salario + 100)",
+        "SELECT salario + 100 FROM empleados GROUP BY GROUPING SETS ((salario + 100))",
+    )
+    for sql in consultas:
+        assert "select_fuera_de_group_by" not in codigos(sql)
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT salario + 100 FROM empleados GROUP BY salario + 100"
+    )
+    assert _fragmentos(
+        "SELECT salario FROM empleados GROUP BY ROLLUP (salario + 100)",
+        "select_fuera_de_group_by",
+    ) == ["salario"]
+
+
 def test_expresion_dentro_de_rollup_no_cubre_la_columna():
     consultas = (
         "SELECT salario FROM empleados GROUP BY ROLLUP (salario + 100)",

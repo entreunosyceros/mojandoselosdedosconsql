@@ -277,7 +277,11 @@ def _alias_impide_aviso(forma: Expresion, alias: list[str | None], claves: list[
 
 def _misma_expresion(proyeccion: Nodo, elementos: list[Nodo], dialecto: str) -> bool:
     izquierda = _canon(normalizar(_nucleo(proyeccion), dialecto))
-    return any(_canon(normalizar(_nucleo(elemento), dialecto)) == izquierda for elemento in elementos)
+    for elemento in elementos:
+        for pieza in _piezas_de_grupo(elemento._expression):
+            if _canon(normalizar(_nucleo(Nodo(pieza)), dialecto)) == izquierda:
+                return True
+    return False
 
 
 def _referencias_nodo(expr, internas: frozenset[str] = frozenset()):
@@ -590,7 +594,11 @@ def _claves_grupo(elementos: list[Nodo], tablas: tuple[Tabla, ...]) -> list[_Ref
 
 
 def _piezas_de_grupo(expr) -> list:
-    if type(expr).__name__ in _CONJUNTOS:
+    nombre = type(expr).__name__
+    if nombre == "Paren" and _es_expr(getattr(expr, "this", None)):
+        return _piezas_de_grupo(expr.this)
+    # (departamento, salario) y (1, 2) llegan como Tuple, igual que un paréntesis de un solo ítem.
+    if nombre in _CONJUNTOS or nombre == "Tuple":
         piezas = []
         for item in expr.args.get("expressions") or []:
             if _es_expr(item):
