@@ -300,6 +300,27 @@ def test_grouping_sets_cubre_las_columnas_nombradas():
     assert "select_fuera_de_group_by" not in codigos(completo)
 
 
+def test_ordinal_dentro_de_rollup_cube_y_grouping_sets():
+    consultas = (
+        "SELECT departamento, salario FROM empleados GROUP BY ROLLUP (1)",
+        "SELECT departamento, salario FROM empleados GROUP BY CUBE (1)",
+        "SELECT departamento, salario FROM empleados GROUP BY GROUPING SETS ((1))",
+    )
+    for sql in consultas:
+        assert _fragmentos(sql, "select_fuera_de_group_by") == ["salario"]
+    assert "select_fuera_de_group_by" not in codigos(consultas[0], "sqlite")
+
+
+def test_expresion_dentro_de_rollup_no_cubre_la_columna():
+    consultas = (
+        "SELECT salario FROM empleados GROUP BY ROLLUP (salario + 100)",
+        "SELECT salario FROM empleados GROUP BY CUBE (salario + 100)",
+        "SELECT salario FROM empleados GROUP BY GROUPING SETS ((salario + 100))",
+    )
+    for sql in consultas:
+        assert _fragmentos(sql, "select_fuera_de_group_by") == ["salario"]
+
+
 def test_group_by_plano_avisa_por_salario():
     sql = "SELECT departamento, salario FROM empleados GROUP BY departamento"
     assert _fragmentos(sql, "select_fuera_de_group_by") == ["salario"]

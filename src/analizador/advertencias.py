@@ -550,12 +550,16 @@ def _mencion(expr, anulables: set[str]) -> str | None:
     return None
 
 
+_CONJUNTOS = {"Rollup", "Cube", "GroupingSets"}
+
+
 def _ordinales(elementos: list[Nodo]) -> set[int]:
     cubiertos: set[int] = set()
     for elemento in elementos:
-        valor = _ordinal(elemento._expression)
-        if valor is not None:
-            cubiertos.add(valor)
+        for pieza in _piezas_de_grupo(elemento._expression):
+            valor = _ordinal(pieza)
+            if valor is not None:
+                cubiertos.add(valor)
     return cubiertos
 
 
@@ -577,14 +581,22 @@ def _ordinal(expr) -> int | None:
 def _claves_grupo(elementos: list[Nodo], tablas: tuple[Tabla, ...]) -> list[_Ref]:
     claves: list[_Ref] = []
     for elemento in elementos:
-        expr = elemento._expression
-        if type(expr).__name__ in {"Rollup", "Cube", "GroupingSets"}:
-            claves.extend(_referencia(ref, tablas) for ref in _referencias_nodo(expr))
-            continue
-        columna = _columna_simple(expresion(elemento))
-        if columna is not None:
-            claves.append(_referencia(columna, tablas))
+        for pieza in _piezas_de_grupo(elemento._expression):
+            # salario + 100 no es una clave: solo una columna desnuda lo es.
+            columna = _columna_simple(expresion(Nodo(pieza)))
+            if columna is not None:
+                claves.append(_referencia(columna, tablas))
     return claves
+
+
+def _piezas_de_grupo(expr) -> list:
+    if type(expr).__name__ in _CONJUNTOS:
+        piezas = []
+        for item in expr.args.get("expressions") or []:
+            if _es_expr(item):
+                piezas.extend(_piezas_de_grupo(item))
+        return piezas
+    return [expr]
 
 
 def _elementos_grupo(nodo: Nodo) -> list[Nodo]:
