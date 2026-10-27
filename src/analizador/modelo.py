@@ -72,6 +72,7 @@ class Relacion(_Pieza):
     derecha: str
     condicion: str | None
     explicacion: str | None
+    _forma: str | None = field(default=None, compare=False, hash=False, repr=False)
 
 
 @dataclass(frozen=True)

@@ -246,6 +246,61 @@ def test_from_con_comas_relaciona_en_orden_de_escritura():
     assert normalizar(nivel.relaciones[1].derecha, "postgresql") == "c"
 
 
+def test_using_es_la_condicion_del_join():
+    relacion = bloque(_nodo("SELECT * FROM a LEFT JOIN b USING (id)")).relaciones[0]
+    assert relacion.tipo == "left"
+    assert relacion.condicion is not None
+    texto = normalizar(relacion.condicion, "postgresql")
+    assert "USING" in texto
+    assert "id" in texto
+
+
+def test_natural_no_guarda_condicion():
+    relacion = bloque(_nodo("SELECT * FROM a NATURAL JOIN b")).relaciones[0]
+    assert relacion.tipo == "otro"
+    assert relacion.condicion is None
+    assert relacion.forma == "NATURAL JOIN"
+    izquierda = bloque(_nodo("SELECT * FROM a NATURAL LEFT JOIN b")).relaciones[0]
+    assert izquierda.forma == "NATURAL LEFT JOIN"
+    assert izquierda.condicion is None
+
+
+def test_values_y_funcion_conservan_el_origen():
+    valores = bloque(_nodo("SELECT * FROM (VALUES (1)) AS v(c)"))
+    assert [(tabla.nombre, tabla.alias) for tabla in valores.tablas] == [("v", "v")]
+    serie = bloque(_nodo("SELECT * FROM generate_series(1, 3) AS g"))
+    assert serie.tablas[0].alias == "g"
+    assert "GENERATE_SERIES" in serie.tablas[0].nombre.upper()
+
+
+def test_having_y_on_dejan_la_subconsulta_abajo():
+    having = bloque(
+        _nodo("SELECT id FROM t GROUP BY id HAVING id IN (SELECT id FROM secretos WHERE x = NULL)")
+    )
+    assert [tabla.nombre for tabla in having.tablas] == ["t"]
+    assert [tabla.nombre for tabla in bloque(having.subconsultas[0].nodo).tablas] == ["secretos"]
+    unido = bloque(_nodo("SELECT * FROM a JOIN b ON a.id = (SELECT id FROM secretos WHERE x = NULL)"))
+    assert [tabla.nombre for tabla in unido.tablas] == ["a", "b"]
+    assert [tabla.nombre for tabla in bloque(unido.subconsultas[0].nodo).tablas] == ["secretos"]
+
+
+def test_update_from_y_delete_using_conservan_el_origen():
+    actualizado = bloque(_nodo("UPDATE t SET nombre = 'a' FROM s WHERE t.id = s.id"))
+    assert [tabla.nombre for tabla in actualizado.tablas] == ["t", "s"]
+    assert any(clausula.nombre == "SET" for clausula in actualizado.clausulas)
+    borrado = bloque(_nodo("DELETE FROM t USING s WHERE t.id = s.id"))
+    assert [tabla.nombre for tabla in borrado.tablas] == ["t", "s"]
+
+
+def test_insert_expone_columnas_valores_y_conflicto():
+    nivel = bloque(_nodo("INSERT INTO dest (id) VALUES (1) ON CONFLICT (id) DO NOTHING"))
+    nombres = [clausula.nombre for clausula in nivel.clausulas]
+    assert "VALUES" in nombres
+    assert "ON CONFLICT" in nombres
+    assert [tabla.nombre for tabla in nivel.tablas] == ["dest"]
+    assert nivel.subconsultas == ()
+
+
 def test_join_guarda_tipo_lados_y_on():
     consultas = {
         "SELECT * FROM a JOIN b ON a.id = b.id": "inner",

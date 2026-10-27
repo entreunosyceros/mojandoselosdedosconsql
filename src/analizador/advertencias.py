@@ -138,17 +138,18 @@ def _calificadores(lado: str, tablas: tuple[Tabla, ...]) -> set[str]:
     return nombres
 
 
+def _formas(nombre: str) -> tuple[str, ...]:
+    return (nombre, f'"{nombre}"', f"`{nombre}`", f"[{nombre}]")
+
+
 def _lado_contiene(lado: str, tabla: Tabla) -> bool:
     if lado.startswith("("):
-        return bool(tabla.alias) and (
-            lado.endswith(f" AS {tabla.alias}") or lado.endswith(f' AS "{tabla.alias}"')
+        return bool(tabla.alias) and any(
+            lado.endswith(f" AS {forma}") for forma in _formas(tabla.alias)
         )
     if tabla.alias:
-        return lado.endswith(f" AS {tabla.alias}") or lado.endswith(f' AS "{tabla.alias}"')
-    citado = f'"{tabla.nombre}"'
-    return lado in {tabla.nombre, citado} or lado.endswith(f".{tabla.nombre}") or lado.endswith(
-        f".{citado}"
-    )
+        return any(lado.endswith(f" AS {forma}") for forma in _formas(tabla.alias))
+    return any(lado == forma or lado.endswith(f".{forma}") for forma in _formas(tabla.nombre))
 
 
 def _comparaciones_nulas(componente, clausulas, relaciones, columnas, dialecto) -> list[Advertencia]:
@@ -223,7 +224,7 @@ def _agrupacion(componente, clausulas, columnas, dialecto) -> list[Advertencia]:
     if dialecto == "sqlite":
         return []
     grupo = next((nodo for nombre, nodo in clausulas if nombre == "GROUP BY"), None)
-    if grupo is None:
+    if grupo is None or _grupo_opaco(grupo):
         return []
     elementos = _elementos_grupo(grupo)
     claves = [
@@ -545,6 +546,21 @@ def _mencion(expr, anulables: set[str]) -> str | None:
         if encontrado:
             return encontrado
     return None
+
+
+def _grupo_opaco(nodo: Nodo) -> bool:
+    return any(_elemento_opaco(elemento._expression) for elemento in _elementos_grupo(nodo))
+
+
+def _elemento_opaco(expr) -> bool:
+    nombre = type(expr).__name__
+    if nombre in {"Rollup", "Cube", "GroupingSets"}:
+        return True
+    if nombre in {"Paren", "Neg"} and _es_expr(getattr(expr, "this", None)):
+        return _elemento_opaco(expr.this)
+    if nombre != "Literal" or expr.args.get("is_string"):
+        return False
+    return str(expr.args.get("this") or "").isdigit()
 
 
 def _elementos_grupo(nodo: Nodo) -> list[Nodo]:

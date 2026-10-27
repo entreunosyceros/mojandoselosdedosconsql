@@ -4,12 +4,12 @@ from analizador.semantica import componentes
 
 
 def codigos(sql, dialecto="postgresql"):
-    raiz = componentes(parsear(sql, dialecto).sentencias[0].nodo, 1)
+    raiz = componentes(parsear(sql, dialecto).sentencias[0].nodo, 1, dialecto)
     return [a.codigo for a in evaluar(raiz, dialecto)]
 
 
 def avisos(sql, dialecto="postgresql"):
-    raiz = componentes(parsear(sql, dialecto).sentencias[0].nodo, 1)
+    raiz = componentes(parsear(sql, dialecto).sentencias[0].nodo, 1, dialecto)
     return evaluar(raiz, dialecto)
 
 
@@ -263,3 +263,43 @@ def test_la_correlacion_no_se_esconde_tras_el_nombre_base_interno():
     assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
     propio = "SELECT (SELECT a1.id FROM a AS a1) FROM a GROUP BY a.x"
     assert "select_fuera_de_group_by" not in codigos(propio)
+
+
+def test_group_by_ordinal_no_avisa():
+    sql = "SELECT departamento, salario FROM empleados GROUP BY 1, 2"
+    assert "select_fuera_de_group_by" not in codigos(sql)
+
+
+def test_rollup_cube_y_grouping_sets_no_avisan():
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT departamento, salario FROM empleados GROUP BY ROLLUP (departamento, salario)"
+    )
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT departamento, salario FROM empleados GROUP BY CUBE (departamento)"
+    )
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT departamento, salario FROM empleados "
+        "GROUP BY GROUPING SETS ((departamento), (salario))"
+    )
+
+
+def test_columna_sin_cubrir_sigue_avisando_y_el_agregado_no():
+    assert "select_fuera_de_group_by" in codigos(
+        "SELECT departamento, salario, extra FROM empleados GROUP BY departamento, salario"
+    )
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT departamento, SUM(salario) FROM empleados GROUP BY departamento"
+    )
+
+
+def test_having_y_on_avisan_sin_copiar_secretos():
+    having = "SELECT id FROM t GROUP BY id HAVING id IN (SELECT id FROM secretos WHERE x = NULL)"
+    raiz = componentes(parsear(having, "postgresql").sentencias[0].nodo, 1, "postgresql")
+    assert [tabla.nombre for tabla in raiz.tablas] == ["t"]
+    assert any(tabla.nombre == "secretos" for hijo in raiz.hijos for tabla in hijo.tablas)
+    assert "comparacion_con_null" in codigos(having)
+    unido = "SELECT * FROM a JOIN b ON a.id = (SELECT id FROM secretos WHERE x = NULL)"
+    raiz = componentes(parsear(unido, "postgresql").sentencias[0].nodo, 1, "postgresql")
+    assert "secretos" not in [tabla.nombre for tabla in raiz.tablas]
+    assert any(tabla.nombre == "secretos" for hijo in raiz.hijos for tabla in hijo.tablas)
+    assert "comparacion_con_null" in codigos(unido)

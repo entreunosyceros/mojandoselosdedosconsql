@@ -11,8 +11,6 @@ from analizador.parser import (
     normalizar,
 )
 
-# componentes no recibe dialecto: columnas y cláusulas salen en forma postgresql.
-_DIALECTO = "postgresql"
 _FORMA_JOIN = {
     "inner": "INNER JOIN",
     "left": "LEFT JOIN",
@@ -27,6 +25,7 @@ _CLAUSULAS_SELECT = (
     "ORDER BY",
     "OFFSET",
     "LIMIT",
+    "TOP",
     "FETCH",
 )
 
@@ -41,8 +40,10 @@ class _Contador:
         return ident
 
 
-def componentes(nodo: Nodo, indice_sentencia: int) -> Componente:
-    return _construir(nodo, indice_sentencia, _Contador(), "raiz", None)
+def componentes(
+    nodo: Nodo, indice_sentencia: int, dialecto: str = "postgresql"
+) -> Componente:
+    return _construir(nodo, indice_sentencia, _Contador(), "raiz", None, dialecto)
 
 
 def _construir(
@@ -51,15 +52,16 @@ def _construir(
     contador: _Contador,
     rol: str,
     nombre: str | None,
+    dialecto: str,
 ) -> Componente:
     info = bloque(nodo)
     if rol == "cte" and info.ramas is not None and not info.ctes:
-        return _cte_sobre_union(nodo, info, indice, contador, nombre)
+        return _cte_sobre_union(nodo, info, indice, contador, nombre, dialecto)
     if info.ramas is not None and info.ctes:
-        return _envoltura(nodo, info, indice, contador, rol, nombre)
+        return _envoltura(nodo, info, indice, contador, rol, nombre, dialecto)
     if info.ramas is not None:
-        return _union(nodo, info, indice, contador)
-    return _consulta(nodo, info, indice, contador, rol, nombre)
+        return _union(nodo, info, indice, contador, dialecto)
+    return _consulta(nodo, info, indice, contador, rol, nombre, dialecto)
 
 
 def _envoltura(
@@ -69,10 +71,13 @@ def _envoltura(
     contador: _Contador,
     rol: str,
     nombre: str | None,
+    dialecto: str,
 ) -> Componente:
     ident = contador.tomar(indice)
-    hijos = [_construir(cte.nodo, indice, contador, "cte", cte.alias) for cte in info.ctes]
-    hijos.append(_union(nodo, info, indice, contador))
+    hijos = [
+        _construir(cte.nodo, indice, contador, "cte", cte.alias, dialecto) for cte in info.ctes
+    ]
+    hijos.append(_union(nodo, info, indice, contador, dialecto))
     return _componente(
         ident,
         "cte" if rol == "cte" else "consulta",
@@ -94,6 +99,7 @@ def _cte_sobre_union(
     indice: int,
     contador: _Contador,
     nombre: str | None,
+    dialecto: str,
 ) -> Componente:
     ident = contador.tomar(indice)
     return _componente(
@@ -106,17 +112,19 @@ def _cte_sobre_union(
         (),
         (),
         (),
-        (_union(nodo, info, indice, contador),),
+        (_union(nodo, info, indice, contador, dialecto),),
         nodo,
     )
 
 
-def _union(nodo: Nodo, info: Bloque, indice: int, contador: _Contador) -> Componente:
+def _union(
+    nodo: Nodo, info: Bloque, indice: int, contador: _Contador, dialecto: str
+) -> Componente:
     ident = contador.tomar(indice)
     hijos = tuple(
-        _construir(rama, indice, contador, "rama", None) for rama in info.ramas or ()
+        _construir(rama, indice, contador, "rama", None, dialecto) for rama in info.ramas or ()
     )
-    clausulas = _clausulas_de(info)
+    clausulas = _clausulas_de(info, dialecto)
     return _componente(
         ident,
         "union",
@@ -126,7 +134,7 @@ def _union(nodo: Nodo, info: Bloque, indice: int, contador: _Contador) -> Compon
         (),
         clausulas,
         (),
-        _pasos(info, (), (), clausulas),
+        _pasos(info, (), (), clausulas, dialecto),
         hijos,
         nodo,
     )
@@ -139,15 +147,18 @@ def _consulta(
     contador: _Contador,
     rol: str,
     nombre: str | None,
+    dialecto: str,
 ) -> Componente:
     ident = contador.tomar(indice)
-    tablas = _tablas_de(info)
-    columnas = _columnas_de(info, tablas)
-    clausulas = _clausulas_de(info)
-    relaciones = _relaciones_de(info)
-    hijos = [_construir(cte.nodo, indice, contador, "cte", cte.alias) for cte in info.ctes]
+    tablas = _tablas_de(info, dialecto)
+    columnas = _columnas_de(info, tablas, dialecto)
+    clausulas = _clausulas_de(info, dialecto)
+    relaciones = _relaciones_de(info, dialecto)
+    hijos = [
+        _construir(cte.nodo, indice, contador, "cte", cte.alias, dialecto) for cte in info.ctes
+    ]
     hijos.extend(
-        _construir(sub.nodo, indice, contador, "hijo", None) for sub in info.subconsultas
+        _construir(sub.nodo, indice, contador, "hijo", None, dialecto) for sub in info.subconsultas
     )
     return _componente(
         ident,
@@ -158,7 +169,7 @@ def _consulta(
         columnas,
         clausulas,
         relaciones,
-        _pasos(info, tablas, relaciones, clausulas),
+        _pasos(info, tablas, relaciones, clausulas, dialecto),
         tuple(hijos),
         nodo,
     )
@@ -201,9 +212,9 @@ def _clase(rol: str) -> str:
     return "consulta"
 
 
-def _tablas_de(info: Bloque) -> tuple[Tabla, ...]:
+def _tablas_de(info: Bloque, dialecto: str) -> tuple[Tabla, ...]:
     tablas: list[Tabla] = []
-    for clase, indice, pieza in _origenes(info):
+    for clase, indice, pieza in _origenes(info, dialecto):
         if clase == "base" and isinstance(pieza, TablaSintactica):
             tablas.append(
                 Tabla(
@@ -220,7 +231,9 @@ def _tablas_de(info: Bloque) -> tuple[Tabla, ...]:
     return tuple(tablas)
 
 
-def _origenes(info: Bloque) -> list[tuple[str, int, TablaSintactica | Subconsulta]]:
+def _origenes(
+    info: Bloque, dialecto: str
+) -> list[tuple[str, int, TablaSintactica | Subconsulta]]:
     bases = list(enumerate(info.tablas))
     derivadas = [(indice, sub) for indice, sub in enumerate(info.subconsultas) if sub.alias]
     if not info.relaciones:
@@ -228,8 +241,8 @@ def _origenes(info: Bloque) -> list[tuple[str, int, TablaSintactica | Subconsult
             ("derivada", indice, sub) for indice, sub in derivadas
         ]
 
-    lados = [normalizar(info.relaciones[0].izquierda, _DIALECTO)]
-    lados.extend(normalizar(relacion.derecha, _DIALECTO) for relacion in info.relaciones)
+    lados = [normalizar(info.relaciones[0].izquierda, dialecto)]
+    lados.extend(normalizar(relacion.derecha, dialecto) for relacion in info.relaciones)
     orden: list[tuple[str, int, TablaSintactica | Subconsulta]] = []
     bases_usadas: set[int] = set()
     derivadas_usadas: set[int] = set()
@@ -275,20 +288,21 @@ def _tomar_derivada(
         return
 
 
+def _formas(nombre: str) -> tuple[str, ...]:
+    return (nombre, f'"{nombre}"', f"`{nombre}`", f"[{nombre}]")
+
+
 def _lado_es_base(lado: str, tabla: TablaSintactica) -> bool:
     if lado.startswith("("):
         return False
     if tabla.alias:
-        return lado.endswith(f" AS {tabla.alias}") or lado.endswith(f' AS "{tabla.alias}"')
-    citado = f'"{tabla.nombre}"'
-    return lado in {tabla.nombre, citado} or lado.endswith(f".{tabla.nombre}") or lado.endswith(
-        f".{citado}"
-    )
+        return any(lado.endswith(f" AS {forma}") for forma in _formas(tabla.alias))
+    return any(lado == forma or lado.endswith(f".{forma}") for forma in _formas(tabla.nombre))
 
 
 def _lado_es_derivada(lado: str, alias: str) -> bool:
-    return lado.startswith("(") and (
-        lado.endswith(f" AS {alias}") or lado.endswith(f' AS "{alias}"')
+    return lado.startswith("(") and any(
+        lado.endswith(f" AS {forma}") for forma in _formas(alias)
     )
 
 
@@ -300,12 +314,12 @@ def _papel_tabla(tipo: str, indice: int) -> str:
     return "lectura"
 
 
-def _columnas_de(info: Bloque, tablas: tuple[Tabla, ...]) -> tuple[Columna, ...]:
+def _columnas_de(info: Bloque, tablas: tuple[Tabla, ...], dialecto: str) -> tuple[Columna, ...]:
     papel = "definicion" if info.tipo == "Create" else "proyeccion"
-    return tuple(_columna(proyeccion, tablas, papel) for proyeccion in info.proyecciones)
+    return tuple(_columna(proyeccion, tablas, papel, dialecto) for proyeccion in info.proyecciones)
 
 
-def _columna(nodo: Nodo, tablas: tuple[Tabla, ...], papel: str) -> Columna:
+def _columna(nodo: Nodo, tablas: tuple[Tabla, ...], papel: str, dialecto: str) -> Columna:
     forma = expresion(nodo)
     alias = None
     nucleo = forma
@@ -323,7 +337,7 @@ def _columna(nodo: Nodo, tablas: tuple[Tabla, ...], papel: str) -> Columna:
         calificador = None
     certeza, tabla = _resolver(calificador, tablas)
     return Columna(
-        expresion=normalizar(nodo, _DIALECTO),
+        expresion=normalizar(nodo, dialecto),
         nombre=nombre,
         calificador=calificador,
         tabla=tabla,
@@ -349,27 +363,30 @@ def _resolver(calificador: str | None, tablas: tuple[Tabla, ...]) -> tuple[str, 
     return "ambigua", None
 
 
-def _clausulas_de(info: Bloque) -> tuple[Clausula, ...]:
-    return tuple(
-        Clausula(
-            nombre=clausula.nombre,
-            texto=normalizar(clausula.nodo, _DIALECTO),
-            explicacion=None,
-        )
-        for clausula in info.clausulas
-    )
+def _clausulas_de(info: Bloque, dialecto: str) -> tuple[Clausula, ...]:
+    return tuple(_clausula_de(clausula.nombre, clausula.nodo, dialecto) for clausula in info.clausulas)
 
 
-def _relaciones_de(info: Bloque) -> tuple[Relacion, ...]:
+def _clausula_de(nombre: str, nodo: Nodo, dialecto: str) -> Clausula:
+    texto = normalizar(nodo, dialecto)
+    if nombre == "LIMIT" and dialecto == "sqlserver":
+        nombre = "TOP"
+        if texto.startswith("LIMIT"):
+            texto = "TOP" + texto[len("LIMIT") :]
+    return Clausula(nombre=nombre, texto=texto, explicacion=None)
+
+
+def _relaciones_de(info: Bloque, dialecto: str) -> tuple[Relacion, ...]:
     return tuple(
         Relacion(
             tipo=relacion.tipo,
-            izquierda=normalizar(relacion.izquierda, _DIALECTO),
-            derecha=normalizar(relacion.derecha, _DIALECTO),
+            izquierda=normalizar(relacion.izquierda, dialecto),
+            derecha=normalizar(relacion.derecha, dialecto),
             condicion=None
             if relacion.condicion is None
-            else normalizar(relacion.condicion, _DIALECTO),
+            else normalizar(relacion.condicion, dialecto),
             explicacion=None,
+            _forma=relacion.forma,
         )
         for relacion in info.relaciones
     )
@@ -380,9 +397,10 @@ def _pasos(
     tablas: tuple[Tabla, ...],
     relaciones: tuple[Relacion, ...],
     clausulas: tuple[Clausula, ...],
+    dialecto: str,
 ) -> tuple[str, ...]:
     if info.tipo == "Select":
-        return _pasos_select(info, tablas, relaciones, clausulas)
+        return _pasos_select(info, tablas, relaciones, clausulas, dialecto)
     if info.tipo == "Insert":
         return _pasos_insert(info, tablas, clausulas)
     if info.tipo == "Update":
@@ -397,6 +415,7 @@ def _pasos_select(
     tablas: tuple[Tabla, ...],
     relaciones: tuple[Relacion, ...],
     clausulas: tuple[Clausula, ...],
+    dialecto: str,
 ) -> tuple[str, ...]:
     pasos = _pasos_origenes(tablas, relaciones)
     por_nombre = {clausula.nombre: clausula for clausula in clausulas}
@@ -406,10 +425,10 @@ def _pasos_select(
             pasos.append(_paso_clausula(clausula))
     if info.proyecciones:
         expresiones = ", ".join(
-            normalizar(proyeccion, _DIALECTO) for proyeccion in info.proyecciones
+            normalizar(proyeccion, dialecto) for proyeccion in info.proyecciones
         )
         pasos.append(f"Selecciona {expresiones}.")
-    for nombre in ("DISTINCT", "ORDER BY", "OFFSET", "LIMIT", "FETCH"):
+    for nombre in ("DISTINCT", "ORDER BY", "OFFSET", "LIMIT", "TOP", "FETCH"):
         clausula = por_nombre.get(nombre)
         if clausula is not None:
             pasos.append(_paso_clausula(clausula))
@@ -431,13 +450,20 @@ def _pasos_origenes(tablas: tuple[Tabla, ...], relaciones: tuple[Relacion, ...])
 
 
 def _paso_relacion(relacion: Relacion) -> str:
-    if relacion.condicion is None:
+    return _texto_relacion(relacion)
+
+
+def _texto_relacion(relacion: Relacion) -> str:
+    if relacion.condicion:
+        forma = relacion._forma or _FORMA_JOIN.get(relacion.tipo, "JOIN")
+        return (
+            f"Une {relacion.izquierda} con {relacion.derecha} con un {forma}, "
+            f"por {relacion.condicion}."
+        )
+    if relacion.tipo == "cross":
         return f"Une {relacion.izquierda} con {relacion.derecha} con un producto cruzado."
-    forma = _FORMA_JOIN.get(relacion.tipo, "JOIN")
-    return (
-        f"Une {relacion.izquierda} con {relacion.derecha} con un {forma}, "
-        f"por {relacion.condicion}."
-    )
+    forma = relacion._forma or _FORMA_JOIN.get(relacion.tipo, "JOIN")
+    return f"Une {relacion.izquierda} con {relacion.derecha} con un {forma}."
 
 
 def _pasos_insert(
@@ -446,9 +472,18 @@ def _pasos_insert(
     pasos: list[str] = []
     if tablas:
         pasos.append(f"Inserta filas en {tablas[0].nombre}.")
-    if info.subconsultas:
+    emitidas: set[str] = set()
+    for nombre in ("COLUMNAS", "VALUES"):
+        clausula = next((item for item in clausulas if item.nombre == nombre), None)
+        if clausula is None:
+            continue
+        pasos.append(_paso_clausula(clausula))
+        emitidas.add(nombre)
+    if "VALUES" not in emitidas and info.subconsultas:
         pasos.append("Usa la consulta de origen.")
-    pasos.extend(_paso_clausula(clausula) for clausula in clausulas)
+    pasos.extend(
+        _paso_clausula(clausula) for clausula in clausulas if clausula.nombre not in emitidas
+    )
     return tuple(pasos)
 
 
@@ -487,8 +522,12 @@ def _paso_clausula(clausula: Clausula) -> str:
         return f"Filtra los grupos según {contenido}."
     if clausula.nombre == "ORDER BY":
         return f"Ordena el resultado por {contenido}."
-    if clausula.nombre in {"LIMIT", "FETCH", "OFFSET"}:
+    if clausula.nombre in {"LIMIT", "TOP", "FETCH", "OFFSET"}:
         return f"Limita el resultado a {clausula.texto}."
+    if clausula.nombre == "SET":
+        return f"Asigna {contenido}."
+    if clausula.nombre == "VALUES":
+        return f"Usa los valores {contenido}."
     return f"Esta parte es un nodo {clausula.nombre} y su texto es {clausula.texto}."
 
 

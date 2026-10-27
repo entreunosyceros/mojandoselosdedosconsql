@@ -58,7 +58,7 @@ def _construir(nodo, indice: int, tipo: str, dialecto: str) -> tuple[Sentencia, 
         return _rota(indice, tipo, "formatear", None, None, None, ())
 
     try:
-        arbol = componentes(nodo, indice)
+        arbol = componentes(nodo, indice, dialecto)
     except (ErrorDeFase, Exception):
         return _rota(indice, tipo, "recorrer", sql_formateado, None, None, ())
 

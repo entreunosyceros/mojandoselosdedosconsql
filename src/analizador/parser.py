@@ -63,6 +63,7 @@ class RelacionSintactica:
     izquierda: Nodo
     derecha: Nodo
     condicion: Nodo | None
+    forma: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +127,7 @@ def normalizar(nodo: Nodo, dialecto: str) -> str:
 
 def bloque(nodo: Nodo) -> Bloque:
     arbol, heredadas = _entrada(nodo._expression)
-    clausulas = heredadas + _clausulas(arbol)
+    clausulas = _clausulas_dml(arbol) + heredadas + _clausulas(arbol)
     if isinstance(arbol, exp.SetOperation):
         # SQLGlot guarda UNION ALL con distinct=False. Ese booleano no es una cláusula DISTINCT.
         return Bloque(
@@ -162,12 +163,21 @@ def bloque(nodo: Nodo) -> Bloque:
                 subconsultas.append(origen_consulta)
     else:
         tablas.extend(_tablas_de_objeto(arbol))
+        if isinstance(arbol, (exp.Update, exp.Delete)):
+            for fuente in _fuentes_adicionales(arbol):
+                _incorporar_fuente(fuente, tablas, subconsultas)
         if isinstance(arbol, exp.Create):
             proyecciones.extend(Nodo(columna) for columna in _columnas_definidas(arbol))
 
     where = arbol.args.get("where")
     if isinstance(where, exp.Where) and isinstance(where.this, exp.Expression):
         subconsultas.extend(_subconsultas_directas(where.this))
+    having = arbol.args.get("having")
+    if isinstance(having, exp.Having) and isinstance(having.this, exp.Expression):
+        subconsultas.extend(_subconsultas_directas(having.this))
+    for relacion in relaciones:
+        if relacion.condicion is not None:
+            subconsultas.extend(_subconsultas_directas(relacion.condicion._expression))
 
     return Bloque(
         type(arbol).__name__,
@@ -228,6 +238,10 @@ def _origenes(
         consulta = _subconsulta_de_origen(fuente)
         if consulta is not None:
             subconsultas.append(consulta)
+            continue
+        valor = _tabla_de_valor(fuente)
+        if valor is not None:
+            tablas.append(valor)
 
     if isinstance(from_, exp.From) and isinstance(from_.this, exp.Expression):
         # FROM a, b llega como JOIN sin tipo ni ON: un producto cruzado, en el orden escrito.
@@ -235,13 +249,13 @@ def _origenes(
         for join in joins:
             if not isinstance(join.this, exp.Expression):
                 continue
-            condicion = join.args.get("on")
             relaciones.append(
                 RelacionSintactica(
                     _tipo_join(join),
                     Nodo(anterior),
                     Nodo(join.this),
-                    Nodo(condicion) if isinstance(condicion, exp.Expression) else None,
+                    _condicion_join(join),
+                    _forma_natural(join),
                 )
             )
             anterior = join.this
@@ -267,6 +281,29 @@ def _tipo_join(join: exp.Join) -> str:
     if kind in {"", "INNER"}:
         return "inner"
     return "otro"
+
+
+def _condicion_join(join: exp.Join) -> Nodo | None:
+    condicion = join.args.get("on")
+    if isinstance(condicion, exp.Expression):
+        return Nodo(condicion)
+    columnas = [
+        columna.copy()
+        for columna in (join.args.get("using") or [])
+        if isinstance(columna, exp.Expression)
+    ]
+    if not columnas:
+        return None
+    return Nodo(exp.Anonymous(this="USING ", expressions=columnas))
+
+
+def _forma_natural(join: exp.Join) -> str | None:
+    if str(join.args.get("method") or "").upper() != "NATURAL":
+        return None
+    lado = str(join.args.get("side") or "").upper()
+    if lado in {"LEFT", "RIGHT", "FULL"}:
+        return f"NATURAL {lado} JOIN"
+    return "NATURAL JOIN"
 
 
 def _subconsulta_de_origen(fuente: exp.Expression) -> Subconsulta | None:
@@ -318,7 +355,108 @@ def _tabla_de(arbol: exp.Expression) -> TablaSintactica | None:
     if not isinstance(tabla, exp.Table):
         return None
     alias = tabla.alias if isinstance(tabla.alias, str) and tabla.alias else None
-    return TablaSintactica(tabla.name, alias)
+    nombre = tabla.name
+    if not nombre and isinstance(tabla.this, exp.Expression) and not isinstance(tabla.this, exp.Identifier):
+        nombre = _nombre_de_funcion(tabla)
+    if not nombre:
+        return None
+    return TablaSintactica(nombre, alias)
+
+
+def _tabla_de_valor(fuente: exp.Expression) -> TablaSintactica | None:
+    if not isinstance(fuente, (exp.Values, exp.Unnest)):
+        return None
+    alias = _texto_alias(fuente)
+    if alias:
+        return TablaSintactica(alias, alias)
+    return TablaSintactica("VALUES" if isinstance(fuente, exp.Values) else "UNNEST", None)
+
+
+def _nombre_de_funcion(tabla: exp.Table) -> str:
+    # El SQL de la función interna puede envolverla en UNNEST. El de la tabla conserva el nombre.
+    texto = tabla.sql()
+    corte = texto.find("(")
+    if corte > 0:
+        return texto[:corte].strip()
+    alias = tabla.alias if isinstance(tabla.alias, str) else ""
+    sufijo = f" AS {alias}" if alias else ""
+    if sufijo and texto.endswith(sufijo):
+        return texto[: -len(sufijo)].strip()
+    return texto.strip()
+
+
+def _fuentes_adicionales(arbol: exp.Expression) -> list[exp.Expression]:
+    raices: list[exp.Expression] = []
+    if isinstance(arbol, exp.Update):
+        origen = arbol.args.get("from_")
+        if isinstance(origen, exp.From) and isinstance(origen.this, exp.Expression):
+            raices.append(origen.this)
+    elif isinstance(arbol, exp.Delete):
+        raices.extend(
+            item for item in (arbol.args.get("using") or []) if isinstance(item, exp.Expression)
+        )
+    fuentes: list[exp.Expression] = []
+    for raiz in raices:
+        fuentes.append(raiz)
+        for join in raiz.args.get("joins") or []:
+            if isinstance(getattr(join, "this", None), exp.Expression):
+                fuentes.append(join.this)
+            condicion = join.args.get("on") if isinstance(getattr(join, "args", None), dict) else None
+            if isinstance(condicion, exp.Expression):
+                fuentes.append(condicion)
+    return fuentes
+
+
+def _incorporar_fuente(
+    fuente: exp.Expression,
+    tablas: list[TablaSintactica],
+    subconsultas: list[Subconsulta],
+) -> None:
+    if isinstance(fuente, exp.Table):
+        tabla = _tabla_de(fuente)
+        if tabla is not None:
+            tablas.append(tabla)
+        return
+    consulta = _subconsulta_de_origen(fuente)
+    if consulta is not None:
+        subconsultas.append(consulta)
+        return
+    # El ON de un origen adicional no es una tabla: solo puede esconder subconsultas.
+    if type(fuente).__name__ not in {"Subquery", "Select", "Values", "Unnest", "Lateral"}:
+        subconsultas.extend(_subconsultas_directas(fuente))
+        return
+    valor = _tabla_de_valor(fuente)
+    if valor is not None:
+        tablas.append(valor)
+
+
+def _clausulas_dml(arbol: exp.Expression) -> tuple[ClausulaSintactica, ...]:
+    encontradas: list[ClausulaSintactica] = []
+    if isinstance(arbol, exp.Insert):
+        esquema = arbol.this
+        if isinstance(esquema, exp.Schema) and esquema.expressions:
+            columnas = [
+                columna.copy()
+                for columna in esquema.expressions
+                if isinstance(columna, exp.Expression)
+            ]
+            if columnas:
+                encontradas.append(ClausulaSintactica("COLUMNAS", Nodo(exp.Tuple(expressions=columnas))))
+        origen = arbol.args.get("expression")
+        if isinstance(origen, exp.Values):
+            encontradas.append(ClausulaSintactica("VALUES", Nodo(origen)))
+        conflicto = arbol.args.get("conflict")
+        if isinstance(conflicto, exp.Expression):
+            encontradas.append(ClausulaSintactica("ON CONFLICT", Nodo(conflicto)))
+    elif isinstance(arbol, exp.Update):
+        asignaciones = [
+            item.copy()
+            for item in (arbol.args.get("expressions") or [])
+            if isinstance(item, exp.Expression)
+        ]
+        if asignaciones:
+            encontradas.append(ClausulaSintactica("SET", Nodo(exp.Set(expressions=asignaciones))))
+    return tuple(encontradas)
 
 
 def _tablas_de_objeto(arbol: exp.Expression) -> list[TablaSintactica]:

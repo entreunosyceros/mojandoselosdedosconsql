@@ -151,13 +151,16 @@ def _explicacion_clausula(clausula: Clausula) -> str:
 
 
 def _explicacion_relacion(relacion: Relacion) -> str:
-    if relacion.condicion is None:
+    if relacion.condicion:
+        forma = relacion._forma or _FORMA_JOIN.get(relacion.tipo, "JOIN")
+        return (
+            f"Une {relacion.izquierda} con {relacion.derecha} con un {forma}, "
+            f"por {relacion.condicion}."
+        )
+    if relacion.tipo == "cross":
         return f"Une {relacion.izquierda} con {relacion.derecha} con un producto cruzado."
-    forma = _FORMA_JOIN.get(relacion.tipo, "JOIN")
-    return (
-        f"Une {relacion.izquierda} con {relacion.derecha} con un {forma}, "
-        f"por {relacion.condicion}."
-    )
+    forma = relacion._forma or _FORMA_JOIN.get(relacion.tipo, "JOIN")
+    return f"Une {relacion.izquierda} con {relacion.derecha} con un {forma}."
 
 
 def _resumen_conjunto(componente: Componente) -> str:

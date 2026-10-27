@@ -3,7 +3,7 @@ from analizador.semantica import componentes
 
 
 def _raiz(sql, dialecto="postgresql"):
-    return componentes(parsear(sql, dialecto).sentencias[0].nodo, 1)
+    return componentes(parsear(sql, dialecto).sentencias[0].nodo, 1, dialecto)
 
 
 def test_subconsulta_no_copia_sus_tablas():
