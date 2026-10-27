@@ -3,10 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Analizador SQL</title>
+  <title>Analizador de consultas</title>
+  <link rel="icon" href="/estaticos/logo.png" type="image/png">
   <link rel="stylesheet" href="/estaticos/estilo.css">
 </head>
 <body data-orden-logico="{{ orden_logico }}">
+  <header>
+    {% if hay_logo %}
+    <img src="/estaticos/logo.png" alt="" width="64" height="64">
+    {% endif %}
+    <h1>Mojandose los dedos con:</h1>
+  </header>
   <form id="formulario">
     <label for="dialecto">Dialecto</label>
     <select id="dialecto" name="dialecto">

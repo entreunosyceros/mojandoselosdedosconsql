@@ -329,13 +329,15 @@ def _columna(nodo: Nodo, tablas: tuple[Tabla, ...], papel: str, dialecto: str) -
     if nucleo.forma in {"columna", "asterisco"}:
         nombre = nucleo.nombre
         calificador = nucleo.calificador
+        certeza, tabla = _resolver(calificador, tablas)
     elif papel == "definicion":
         nombre = nucleo.nombre
         calificador = None
+        certeza, tabla = _resolver(calificador, tablas)
     else:
         nombre = None
         calificador = None
-    certeza, tabla = _resolver(calificador, tablas)
+        certeza, tabla = None, None
     return Columna(
         expresion=normalizar(nodo, dialecto),
         nombre=nombre,

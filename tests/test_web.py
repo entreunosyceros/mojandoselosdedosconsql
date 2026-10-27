@@ -38,6 +38,7 @@ def test_estado_inicial_y_valores_del_selector():
     assert "Analizar" in texto
     assert "/estaticos/estilo.css" in texto
     assert "/estaticos/app.js" in texto
+    assert 'rel="icon" href="/estaticos/logo.png"' in texto
 
 
 def test_post_devuelve_el_informe():
@@ -119,6 +120,7 @@ def test_el_script_pide_el_informe_con_fetch_y_textcontent():
 def test_estaticos_montados():
     assert cliente.get("/estaticos/estilo.css").status_code == 200
     assert cliente.get("/estaticos/app.js").status_code == 200
+    assert cliente.get("/estaticos/logo.png").status_code == 200
 
 
 def test_la_plantilla_tiene_autoescape():

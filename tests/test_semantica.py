@@ -63,3 +63,22 @@ def test_alias_unico_queda_resuelto():
     assert raiz.columnas[0].certeza == "resuelta"
     assert raiz.columnas[0].tabla == "empleados"
     assert raiz.columnas[0].calificador == "e"
+
+
+def test_ventana_no_se_clasifica_como_columna_sin_calificar():
+    raiz = _raiz(
+        "WITH ventas_por_cliente AS ("
+        " SELECT cliente_id, SUM(importe) AS importe FROM ventas GROUP BY cliente_id"
+        ") "
+        "SELECT ROW_NUMBER() OVER (ORDER BY importe DESC) AS numero_fila, "
+        "SUM(v.importe) OVER (PARTITION BY v.cliente_id) AS total_cliente "
+        "FROM ventas_por_cliente AS v"
+    )
+    numero_fila, total_cliente = raiz.columnas
+    assert numero_fila.alias == "numero_fila"
+    assert total_cliente.alias == "total_cliente"
+    for columna in (numero_fila, total_cliente):
+        assert columna.certeza is None
+        assert columna.nombre is None
+        assert columna.calificador is None
+        assert columna.tabla is None

@@ -52,7 +52,10 @@ def indice(request: Request) -> HTMLResponse:
     return plantillas.TemplateResponse(
         request,
         "index.html",
-        {"orden_logico": ORDEN_LOGICO},
+        {
+            "orden_logico": ORDEN_LOGICO,
+            "hay_logo": (RAIZ / "estaticos" / "logo.png").is_file(),
+        },
     )
 
 

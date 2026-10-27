@@ -36,6 +36,24 @@ body {
   font: 1rem/1.5 "Segoe UI", "Liberation Sans", sans-serif;
 }
 
+header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 1.25rem;
+}
+
+header img {
+  width: 3.5rem;
+  height: 3.5rem;
+  object-fit: contain;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
 form {
   display: grid;
   gap: 0.45rem;

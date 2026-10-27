@@ -52,7 +52,7 @@ class Columna(_Pieza):
     nombre: str | None
     calificador: str | None
     tabla: str | None
-    certeza: str
+    certeza: str | None
     alias: str | None
     papel: str
     explicacion: str | None
