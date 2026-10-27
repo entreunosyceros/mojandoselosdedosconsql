@@ -597,11 +597,18 @@ def _piezas_de_grupo(expr) -> list:
     nombre = type(expr).__name__
     if nombre == "Paren" and _es_expr(getattr(expr, "this", None)):
         return _piezas_de_grupo(expr.this)
-    # (departamento, salario) y (1, 2) llegan como Tuple, igual que un paréntesis de un solo ítem.
-    if nombre in _CONJUNTOS or nombre == "Tuple":
+    if nombre in _CONJUNTOS:
         piezas = []
         for item in expr.args.get("expressions") or []:
-            if _es_expr(item):
+            if not _es_expr(item):
+                continue
+            # La tupla de GROUPING SETS es la lista del conjunto. En ROLLUP, CUBE
+            # o un GROUP BY suelto, la misma tupla es un constructor de fila.
+            if nombre == "GroupingSets" and type(item).__name__ == "Tuple":
+                for parte in item.args.get("expressions") or []:
+                    if _es_expr(parte):
+                        piezas.extend(_piezas_de_grupo(parte))
+            else:
                 piezas.extend(_piezas_de_grupo(item))
         return piezas
     return [expr]

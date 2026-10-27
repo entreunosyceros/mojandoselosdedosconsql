@@ -311,6 +311,25 @@ def test_ordinal_dentro_de_rollup_cube_y_grouping_sets():
     assert "select_fuera_de_group_by" not in codigos(consultas[0], "sqlite")
 
 
+def test_el_constructor_de_fila_no_se_abre():
+    consultas = (
+        "SELECT departamento, salario FROM empleados GROUP BY (departamento, salario)",
+        "SELECT departamento, salario FROM empleados GROUP BY (1, 2)",
+        "SELECT departamento, salario FROM empleados GROUP BY ROLLUP ((departamento, salario))",
+        "SELECT departamento, salario FROM empleados GROUP BY CUBE ((1, 2))",
+    )
+    for sql in consultas:
+        assert _fragmentos(sql, "select_fuera_de_group_by") == ["departamento", "salario"]
+    assert "select_fuera_de_group_by" not in codigos(consultas[0], "sqlite")
+    assert _fragmentos(
+        "SELECT salario FROM empleados GROUP BY (salario + 100)",
+        "select_fuera_de_group_by",
+    ) == ["salario"]
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT salario + 100 FROM empleados GROUP BY (salario + 100)"
+    )
+
+
 def test_grouping_sets_abre_la_tupla():
     columnas = (
         "SELECT departamento, salario FROM empleados "
@@ -319,6 +338,9 @@ def test_grouping_sets_abre_la_tupla():
     assert "select_fuera_de_group_by" not in codigos(columnas)
     ordinales = "SELECT departamento, salario FROM empleados GROUP BY GROUPING SETS ((1, 2))"
     assert "select_fuera_de_group_by" not in codigos(ordinales)
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT departamento, salario FROM empleados GROUP BY departamento, salario"
+    )
     assert _fragmentos(
         "SELECT departamento, salario FROM empleados GROUP BY GROUPING SETS ((departamento))",
         "select_fuera_de_group_by",
