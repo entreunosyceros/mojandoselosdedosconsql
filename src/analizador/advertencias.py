@@ -224,22 +224,24 @@ def _agrupacion(componente, clausulas, columnas, dialecto) -> list[Advertencia]:
     if dialecto == "sqlite":
         return []
     grupo = next((nodo for nombre, nodo in clausulas if nombre == "GROUP BY"), None)
-    if grupo is None or _grupo_opaco(grupo):
+    if grupo is None:
         return []
     elementos = _elementos_grupo(grupo)
-    claves = [
-        _referencia(columna, componente.tablas)
-        for elemento in elementos
-        if (columna := _columna_simple(expresion(elemento))) is not None
-    ]
+    ordinales = _ordinales(elementos)
+    claves = _claves_grupo(elementos, componente.tablas)
     alias = [
         forma.nombre
         for _, proyeccion in columnas
         if (forma := expresion(proyeccion)).forma == "alias" and forma.nombre
     ]
     avisos: list[Advertencia] = []
+    posicion = 0
     for columna, proyeccion in columnas:
         if columna.papel != "proyeccion":
+            continue
+        posicion += 1
+        # GROUP BY 1 cubre solo esa expresión del SELECT, no las demás.
+        if posicion in ordinales:
             continue
         forma = expresion(proyeccion)
         if _misma_expresion(proyeccion, elementos, dialecto):
@@ -548,19 +550,41 @@ def _mencion(expr, anulables: set[str]) -> str | None:
     return None
 
 
-def _grupo_opaco(nodo: Nodo) -> bool:
-    return any(_elemento_opaco(elemento._expression) for elemento in _elementos_grupo(nodo))
+def _ordinales(elementos: list[Nodo]) -> set[int]:
+    cubiertos: set[int] = set()
+    for elemento in elementos:
+        valor = _ordinal(elemento._expression)
+        if valor is not None:
+            cubiertos.add(valor)
+    return cubiertos
 
 
-def _elemento_opaco(expr) -> bool:
+def _ordinal(expr) -> int | None:
     nombre = type(expr).__name__
-    if nombre in {"Rollup", "Cube", "GroupingSets"}:
-        return True
-    if nombre in {"Paren", "Neg"} and _es_expr(getattr(expr, "this", None)):
-        return _elemento_opaco(expr.this)
+    if nombre == "Paren" and _es_expr(getattr(expr, "this", None)):
+        return _ordinal(expr.this)
     if nombre != "Literal" or expr.args.get("is_string"):
-        return False
-    return str(expr.args.get("this") or "").isdigit()
+        return None
+    texto = str(expr.args.get("this") or "")
+    if not texto.isdigit():
+        return None
+    valor = int(texto)
+    if valor < 1:
+        return None
+    return valor
+
+
+def _claves_grupo(elementos: list[Nodo], tablas: tuple[Tabla, ...]) -> list[_Ref]:
+    claves: list[_Ref] = []
+    for elemento in elementos:
+        expr = elemento._expression
+        if type(expr).__name__ in {"Rollup", "Cube", "GroupingSets"}:
+            claves.extend(_referencia(ref, tablas) for ref in _referencias_nodo(expr))
+            continue
+        columna = _columna_simple(expresion(elemento))
+        if columna is not None:
+            claves.append(_referencia(columna, tablas))
+    return claves
 
 
 def _elementos_grupo(nodo: Nodo) -> list[Nodo]:

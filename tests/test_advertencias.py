@@ -265,22 +265,45 @@ def test_la_correlacion_no_se_esconde_tras_el_nombre_base_interno():
     assert "select_fuera_de_group_by" not in codigos(propio)
 
 
-def test_group_by_ordinal_no_avisa():
-    sql = "SELECT departamento, salario FROM empleados GROUP BY 1, 2"
-    assert "select_fuera_de_group_by" not in codigos(sql)
+def _fragmentos(sql, codigo, dialecto="postgresql"):
+    return [aviso.fragmento for aviso in avisos(sql, dialecto) if aviso.codigo == codigo]
 
 
-def test_rollup_cube_y_grouping_sets_no_avisan():
+def test_el_ordinal_cubre_solo_esa_expresion():
+    sql = "SELECT departamento, salario FROM empleados GROUP BY 1"
+    assert _fragmentos(sql, "select_fuera_de_group_by") == ["salario"]
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
+    assert "select_fuera_de_group_by" not in codigos(
+        "SELECT departamento, salario FROM empleados GROUP BY 1, 2"
+    )
+
+
+def test_rollup_cubre_lo_nombrado_y_avisa_por_el_resto():
+    assert _fragmentos("SELECT a, b FROM t GROUP BY ROLLUP (a)", "select_fuera_de_group_by") == ["b"]
     assert "select_fuera_de_group_by" not in codigos(
         "SELECT departamento, salario FROM empleados GROUP BY ROLLUP (departamento, salario)"
     )
-    assert "select_fuera_de_group_by" not in codigos(
-        "SELECT departamento, salario FROM empleados GROUP BY CUBE (departamento)"
-    )
-    assert "select_fuera_de_group_by" not in codigos(
+
+
+def test_cube_avisa_por_la_columna_no_nombrada():
+    sql = "SELECT departamento, salario FROM empleados GROUP BY CUBE (departamento)"
+    assert _fragmentos(sql, "select_fuera_de_group_by") == ["salario"]
+
+
+def test_grouping_sets_cubre_las_columnas_nombradas():
+    parcial = "SELECT departamento, salario FROM empleados GROUP BY GROUPING SETS ((departamento))"
+    assert _fragmentos(parcial, "select_fuera_de_group_by") == ["salario"]
+    completo = (
         "SELECT departamento, salario FROM empleados "
         "GROUP BY GROUPING SETS ((departamento), (salario))"
     )
+    assert "select_fuera_de_group_by" not in codigos(completo)
+
+
+def test_group_by_plano_avisa_por_salario():
+    sql = "SELECT departamento, salario FROM empleados GROUP BY departamento"
+    assert _fragmentos(sql, "select_fuera_de_group_by") == ["salario"]
+    assert "select_fuera_de_group_by" not in codigos(sql, "sqlite")
 
 
 def test_columna_sin_cubrir_sigue_avisando_y_el_agregado_no():

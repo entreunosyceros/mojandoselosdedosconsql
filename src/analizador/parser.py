@@ -396,15 +396,25 @@ def _fuentes_adicionales(arbol: exp.Expression) -> list[exp.Expression]:
             item for item in (arbol.args.get("using") or []) if isinstance(item, exp.Expression)
         )
     fuentes: list[exp.Expression] = []
+    # MySQL y SQL Server cuelgan el resto de tablas del objetivo, no de FROM ni de USING.
+    objetivo = arbol.args.get("this")
+    if isinstance(objetivo, exp.Table):
+        fuentes.extend(_piezas_de_joins(objetivo))
     for raiz in raices:
         fuentes.append(raiz)
-        for join in raiz.args.get("joins") or []:
-            if isinstance(getattr(join, "this", None), exp.Expression):
-                fuentes.append(join.this)
-            condicion = join.args.get("on") if isinstance(getattr(join, "args", None), dict) else None
-            if isinstance(condicion, exp.Expression):
-                fuentes.append(condicion)
+        fuentes.extend(_piezas_de_joins(raiz))
     return fuentes
+
+
+def _piezas_de_joins(tabla: exp.Expression) -> list[exp.Expression]:
+    piezas: list[exp.Expression] = []
+    for join in tabla.args.get("joins") or []:
+        if isinstance(getattr(join, "this", None), exp.Expression):
+            piezas.append(join.this)
+        condicion = join.args.get("on") if isinstance(getattr(join, "args", None), dict) else None
+        if isinstance(condicion, exp.Expression):
+            piezas.append(condicion)
+    return piezas
 
 
 def _incorporar_fuente(

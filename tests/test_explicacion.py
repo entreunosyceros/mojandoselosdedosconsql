@@ -111,6 +111,15 @@ def test_update_set_menciona_la_asignacion():
     assert any(paso.startswith("Asigna ") and "nombre" in paso for paso in sentencia.pasos)
 
 
+def test_update_mysql_conserva_el_origen_colgado_del_objetivo():
+    sentencia = _sentencia("UPDATE t INNER JOIN s ON t.id = s.id SET t.a = s.a", "mysql")
+    assert [(tabla.nombre, tabla.papel) for tabla in sentencia.arbol.tablas] == [
+        ("t", "destino"),
+        ("s", "lectura"),
+    ]
+    assert any("s" in paso for paso in sentencia.pasos)
+
+
 def test_update_from_y_delete_using_conservan_el_origen():
     actualizado = _sentencia("UPDATE t SET nombre = 'a' FROM s WHERE t.id = s.id")
     assert [tabla.nombre for tabla in actualizado.arbol.tablas] == ["t", "s"]

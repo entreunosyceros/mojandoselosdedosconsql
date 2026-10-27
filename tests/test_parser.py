@@ -290,6 +290,12 @@ def test_update_from_y_delete_using_conservan_el_origen():
     assert any(clausula.nombre == "SET" for clausula in actualizado.clausulas)
     borrado = bloque(_nodo("DELETE FROM t USING s WHERE t.id = s.id"))
     assert [tabla.nombre for tabla in borrado.tablas] == ["t", "s"]
+    mysql = bloque(_nodo("UPDATE t INNER JOIN s ON t.id = s.id SET t.a = s.a", "mysql"))
+    assert [tabla.nombre for tabla in mysql.tablas] == ["t", "s"]
+    coma = bloque(_nodo("UPDATE t, s SET t.a = s.a WHERE t.id = s.id", "mysql"))
+    assert [tabla.nombre for tabla in coma.tablas] == ["t", "s"]
+    servidor = bloque(_nodo("DELETE t FROM t INNER JOIN s ON t.id = s.id", "sqlserver"))
+    assert [tabla.nombre for tabla in servidor.tablas] == ["t", "s"]
 
 
 def test_insert_expone_columnas_valores_y_conflicto():
